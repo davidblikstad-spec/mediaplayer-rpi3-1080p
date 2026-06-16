@@ -10,6 +10,8 @@ decode → DRM hardware plane via kmssink — smooth native 1080p).
 - **Web UI with login** (username + password, stored hashed; session cookie).
 - **Fullscreen HDMI playback** of videos and images via GStreamer on DRM/KMS
   (hardware-decoded, zero-copy — native 1080p on a Pi 3).
+- **Live TV channels** (NRK1/2/3/Super) as playlist items — resolved fresh from
+  NRK's public psapi at play time; optional play-duration before advancing.
 - **Playlists** of video + image items, with per-item:
   - **In / out trim** (videos) and **display duration** (images),
   - **Loop count** — a fixed number of times or **always**,

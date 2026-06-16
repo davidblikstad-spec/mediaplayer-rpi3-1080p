@@ -8,7 +8,7 @@ from flask import (Flask, jsonify, redirect, request, send_file,
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
-from . import cec, config, media, transcode, gst as gstmod
+from . import cec, config, media, transcode, nrk, gst as gstmod
 from .scheduler import Scheduler
 
 _snap_last = {"t": 0.0}
@@ -193,6 +193,12 @@ def create_app():
     @login_required
     def api_transcode_abort(rel):
         return jsonify({"ok": transcode.cancel(rel)})
+
+    # ================= live streams =======================================
+    @app.route("/api/streams")
+    @login_required
+    def api_streams():
+        return jsonify(nrk.channels())
 
     @app.route("/api/media/<path:rel>", methods=["DELETE"])
     @login_required

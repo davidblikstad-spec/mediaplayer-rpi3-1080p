@@ -27,7 +27,7 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst, GLib  # noqa: E402
 
-from . import config, media  # noqa: E402
+from . import config, media, nrk  # noqa: E402
 
 Gst.init(None)
 
@@ -104,31 +104,37 @@ class GstPlayer:
         return self.playbin is not None
 
     # ---- loading / playback ----------------------------------------------
-    def load(self, path, *, kind, start=0.0, end=None, image_dur=None):
-        """Show `path`. kind: 'image' freezes a frame for image_dur seconds;
-        anything else plays as video/audio, optionally trimmed to [start, end]."""
+    def load(self, src, *, kind, start=0.0, end=None, hold=None):
+        """Show `src`. kind: 'image' freezes a frame for `hold` seconds;
+        'stream' plays a live URL (optionally auto-advancing after `hold`);
+        anything else plays a local video/audio file, trimmed to [start, end]."""
         with self._lock:
             self._cancel_image_timer()
-            self._cur_path = path
+            self._cur_path = src
             self._cur_start = float(start or 0.0)
             self._cur_kind = kind
             self._paused = False
             if kind == "image":
                 self._stop_video()
-                self._play_image(path, image_dur)
+                self._play_image(src, hold)
+            elif kind == "stream":
+                self._stop_image()
+                self._play_video(src, 0.0, None, is_url=True)
+                if hold:                         # live stream, advance after N s
+                    self._arm_image_timer(hold)
             else:
                 self._stop_image()
-                self._play_video(path, self._cur_start, end)
+                self._play_video(src, self._cur_start, end)
 
-    def _play_video(self, path, start, end):
+    def _play_video(self, src, start, end, is_url=False):
         pb = self.playbin
         if pb is None:
             return
         pb.set_state(Gst.State.READY)            # flush any previous stream
-        pb.set_property("uri", Gst.filename_to_uri(path))
+        pb.set_property("uri", src if is_url else Gst.filename_to_uri(src))
         pb.set_state(Gst.State.PAUSED)
-        pb.get_state(5 * Gst.SECOND)             # wait for preroll
-        if start > 0 or end is not None:
+        pb.get_state((15 if is_url else 5) * Gst.SECOND)   # wait for preroll
+        if not is_url and (start > 0 or end is not None):
             flags = Gst.SeekFlags.FLUSH | Gst.SeekFlags.ACCURATE
             stop_type = Gst.SeekType.SET if end is not None else Gst.SeekType.NONE
             stop_ns = int(float(end) * Gst.SECOND) if end is not None else -1
@@ -268,13 +274,15 @@ class GstPlayer:
         with self._lock:
             src = self._cur_path
             kind = self._cur_kind
-        if not src or not os.path.exists(src):
+        is_url = bool(src) and src.startswith(("http://", "https://"))
+        if not src or (not is_url and not os.path.exists(src)):
             return False
         pos = self.get_time_pos()
         if pos is None:
             pos = self._cur_start
         cmd = ["ffmpeg", "-y", "-nostdin"]
-        if kind != "image":
+        # local files: seek to the live position; streams/images: just grab one
+        if kind not in ("image", "stream") and not is_url:
             cmd += ["-ss", "%.3f" % max(0.0, pos)]
         cmd += ["-i", src, "-frames:v", "1", "-q:v", "3",
                 "-vf", "scale=640:-2", path]
@@ -386,7 +394,7 @@ class PlayerEngine:
             "index": self.index,
             "count": len(self.items),
             "current": {
-                "file": cur.get("file"),
+                "file": cur.get("file") or cur.get("name"),
                 "type": cur.get("type"),
             } if cur else None,
             "time_pos": self.player.get_time_pos(),
@@ -397,6 +405,11 @@ class PlayerEngine:
 
     # ---- internals --------------------------------------------------------
     def _resolve(self, item):
+        if item.get("type") == "stream":
+            r = dict(item)
+            r["_type"] = "stream"
+            r["_abs"] = None
+            return r
         try:
             ap = media.abs_path(item["file"])
         except Exception:
@@ -416,6 +429,22 @@ class PlayerEngine:
     def _bump_gen(self):
         self._gen += 1
         return self._gen
+
+    def _resolve_stream(self, item):
+        if item.get("provider") == "nrk":
+            return nrk.resolve(item.get("channel"))
+        return item.get("url")
+
+    def _retry_current(self, gen):
+        """Re-attempt the current item after a delay (e.g. a live stream that
+        was momentarily unreachable), unless playback has moved on."""
+        def go():
+            with self.lock:
+                if gen == self._gen and self.current:
+                    self._play_item(self.current)
+        t = threading.Timer(5, go)
+        t.daemon = True
+        t.start()
 
     def _load_current(self):
         if not self.items:
@@ -443,8 +472,18 @@ class PlayerEngine:
         eff_len = None
         if t == "image":
             dur = float(item.get("duration") or 10)
-            self.player.load(item["_abs"], kind="image", image_dur=dur)
+            self.player.load(item["_abs"], kind="image", hold=dur)
             eff_len = dur
+        elif t == "stream":
+            url = self._resolve_stream(item)
+            hold = float(item.get("duration") or 0) or None
+            if not url:
+                self.log("stream unavailable: %s; retrying"
+                         % (item.get("name") or item.get("channel")))
+                self._retry_current(gen)
+                return
+            self.player.load(url, kind="stream", hold=hold)
+            eff_len = hold
         else:
             tin = float(item.get("in") or 0)
             tout = item.get("out")

@@ -111,21 +111,25 @@ function renderPlaylistItems() {
 function itemRow(it, i) {
   const tr = document.createElement("tr");
   const isImg = it.type === "image";
+  const isStream = it.type === "stream";
   const cell = (html) => { const td = document.createElement("td"); td.innerHTML = html; return td; };
   // order controls
   const td0 = document.createElement("td");
   td0.innerHTML = `<button class="small up">↑</button><button class="small down">↓</button>`;
   tr.appendChild(td0);
-  tr.appendChild(cell(`<span title="${esc(it.file)}">${esc(it.file)}</span>`));
-  tr.appendChild(cell(it.type));
+  const label = isStream ? (it.name || it.channel || "live") : it.file;
+  tr.appendChild(cell(`<span title="${esc(label)}">${esc(label)}</span>`));
+  tr.appendChild(cell(isStream ? "live" : it.type));
   // in
-  tr.appendChild(cell(isImg ? "–" : `<input class="in" type="number" min="0" step="0.1" value="${it.in ?? 0}">`));
-  // out / duration
+  tr.appendChild(cell((isImg || isStream) ? "–" : `<input class="in" type="number" min="0" step="0.1" value="${it.in ?? 0}">`));
+  // out / duration (streams: optional seconds to play before advancing; blank = stay live)
   tr.appendChild(cell(isImg
     ? `<input class="dur" type="number" min="1" step="1" value="${it.duration ?? 10}"> s`
-    : `<input class="out" type="number" min="0" step="0.1" value="${it.out ?? ""}" placeholder="end">`));
+    : isStream
+      ? `<input class="dur" type="number" min="1" step="1" value="${it.duration ?? ""}" placeholder="live"> s`
+      : `<input class="out" type="number" min="0" step="0.1" value="${it.out ?? ""}" placeholder="end">`));
   // loops
-  tr.appendChild(cell(isImg ? "1" : `<input class="loop" value="${it.loop ?? 1}">`));
+  tr.appendChild(cell((isImg || isStream) ? (isImg ? "1" : "–") : `<input class="loop" value="${it.loop ?? 1}">`));
   // volume
   tr.appendChild(cell(isImg ? "–" : `<input class="vol" type="number" min="0" max="130" value="${it.volume ?? 100}">`));
   // fades
@@ -139,7 +143,9 @@ function itemRow(it, i) {
   td0.querySelector(".up").onclick = () => moveItem(i, -1);
   td0.querySelector(".down").onclick = () => moveItem(i, 1);
   tda.querySelector(".del").onclick = () => { curPlaylist().items.splice(i, 1); renderPlaylistItems(); };
-  tda.querySelector(".prev").onclick = () => previewMedia(it.file, it.type);
+  tda.querySelector(".prev").onclick = () => isStream
+    ? toast("Live stream — play the playlist to view it on the TV")
+    : previewMedia(it.file, it.type);
   return tr;
 }
 function moveItem(i, d) {
@@ -155,6 +161,17 @@ function collectItems() {
   return rows.map((tr, i) => {
     const src = pl.items[i];
     const g = (c) => tr.querySelector("." + c);
+    if (src.type === "stream") {
+      const dv = g("dur").value.trim();
+      return {
+        id: src.id, type: "stream", provider: src.provider,
+        channel: src.channel, name: src.name,
+        duration: dv === "" ? null : (parseFloat(dv) || null),
+        volume: parseInt(g("vol").value) || 100,
+        fade_in: parseFloat(g("fin").value) || 0,
+        fade_out: parseFloat(g("fout").value) || 0,
+      };
+    }
     const o = { id: src.id, file: src.file, type: src.type };
     if (src.type === "image") {
       o.duration = parseFloat(g("dur").value) || 10;
@@ -215,6 +232,31 @@ $("#pl-add").onclick = async () => {
     await persistPlaylist(cur);
     toast("Added & saved " + it.file + " — pick more, or close (×).");
   });
+};
+$("#pl-add-stream").onclick = async () => {
+  let pl = curPlaylist();
+  if (!pl) { pl = await createPlaylist(); if (!pl) return; }
+  const channels = await api("GET", "/api/streams") || [];
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `<h3>Add a live channel</h3><div class="chips"></div>`;
+  const chips = wrap.querySelector(".chips");
+  channels.forEach(ch => {
+    const b = document.createElement("button");
+    b.className = "primary"; b.textContent = ch.name;
+    b.onclick = async () => {
+      const cur = curPlaylist(); if (!cur) return;
+      cur.items = collectItems();
+      cur.loop_playlist = $("#pl-loop").checked;
+      cur.items.push({ id: rid(), type: "stream", provider: "nrk", channel: ch.id,
+        name: ch.name, duration: null, volume: 100, fade_in: 0, fade_out: 0 });
+      renderPlaylistItems();
+      await persistPlaylist(cur);
+      $("#modal-close").onclick();
+      toast("Added " + ch.name + " (live)");
+    };
+    chips.appendChild(b);
+  });
+  openModal(wrap);
 };
 
 /* ---------- SCHEDULES ---------- */
