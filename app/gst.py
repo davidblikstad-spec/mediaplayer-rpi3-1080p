@@ -94,17 +94,22 @@ class GstPlayer:
         self.playbin = pb
 
     def _make_audio_sink(self):
-        """Audio sink for the selected ALSA device, or None to let playbin use
-        its default (autoaudiosink → system default output)."""
-        dev = self._audio_device
-        if not dev:
-            return None
+        """Build an explicit alsasink (default device, or the selected one).
+
+        We use alsasink rather than autoaudiosink so we can raise
+        alignment-threshold: live HLS (NRK) introduces a small timestamp
+        discontinuity at every ~3 s segment boundary, and the sink's default
+        40 ms threshold makes it resync there — an audible audio drop every
+        segment. A large threshold treats those as continuous, so audio plays
+        smoothly. Falls back to playbin's default sink if alsasink is absent."""
         sink = Gst.ElementFactory.make("alsasink", None)
         if sink is None:
             self.log("alsasink unavailable (install gstreamer1.0-alsa); "
                      "using default audio output")
             return None
-        sink.set_property("device", dev)
+        if self._audio_device:
+            sink.set_property("device", self._audio_device)
+        sink.set_property("alignment-threshold", 1 * Gst.SECOND)
         return sink
 
     def restart(self):
