@@ -26,14 +26,13 @@ PY
 
 DEV="plughw:CARD=vc4hdmi,DEV=0"
 DUR="${2:-30}"
-Q="queue max-size-buffers=0 max-size-bytes=0 max-size-time=8000000000"
 if [ $# -ge 1 ]; then
   SINKS=("$1")
 else
   SINKS=(
     "alsasink device=$DEV"
-    "$Q ! audioconvert ! audioresample ! alsasink device=$DEV"
-    "$Q ! audioconvert ! audioresample ! alsasink device=$DEV provide-clock=false slave-method=resample"
+    "audiorate ! audioconvert ! audioresample ! alsasink device=$DEV"
+    "audiorate ! audioconvert ! audioresample ! alsasink device=$DEV alignment-threshold=40000000"
   )
 fi
 
@@ -45,7 +44,7 @@ for SINK in "${SINKS[@]}"; do
   echo "### TEST $i/${#SINKS[@]}: $SINK"
   echo "### LISTEN ~${DUR}s — smooth, or starts dropping after a few s?"
   echo "############################################################"
-  GST_DEBUG="2,alsa:6,audiobasesink:5" timeout -k3 "$DUR" gst-launch-1.0 playbin3 uri="$URL" flags=0x13 \
+  GST_DEBUG=1 timeout -k3 "$DUR" gst-launch-1.0 playbin3 uri="$URL" flags=0x13 \
     video-sink=fakesink audio-sink="$SINK" >"/tmp/nrk-test-$i.log" 2>&1
   echo ">>> log: /tmp/nrk-test-$i.log ($(wc -l < /tmp/nrk-test-$i.log) lines)"
   grep -qiE "Unknown PCM|No such device|could not open|cannot find card" "/tmp/nrk-test-$i.log" \
@@ -53,4 +52,4 @@ for SINK in "${SINKS[@]}"; do
   sleep 1
 done
 echo
-echo "Done. Which TEST number stayed smooth?  (1=baseline, 2=8s buffer, 3=8s buffer+slave/resample)"
+echo "Done. Which TEST number stayed smooth?  (1=baseline, 2=audiorate, 3=audiorate+40ms align)"
