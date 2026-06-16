@@ -11,20 +11,13 @@ from . import config, media
 
 SOCKET_PATH = "/tmp/mediaplayer-mpv.sock"
 
-# This mpv build has no usable --hwdec on a Pi (only nvdec/vaapi), so we force
-# FFmpeg's V4L2 mem2mem hardware decoders (the Pi's /dev/video10 codec block)
-# per file, chosen by codec. Software decode of e.g. 720p50 H.264 is too slow.
-V4L2M2M = {
-    "h264": "h264_v4l2m2m",
-    "hevc": "hevc_v4l2m2m",
-    "h263": "h263_v4l2m2m",
-    "mpeg4": "mpeg4_v4l2m2m",
-    "mpeg2video": "mpeg2_v4l2m2m",
-    "mpeg1video": "mpeg1_v4l2m2m",
-    "vc1": "vc1_v4l2m2m",
-    "vp8": "vp8_v4l2m2m",
-    "vp9": "vp9_v4l2m2m",
-}
+# Hardware decode on the Pi uses the V4L2 mem2mem codec block (/dev/video10).
+# We engage it via mpv's --hwdec=v4l2m2m-copy, set at startup. The "-copy" mode
+# pulls decoded frames into system memory so it works with any video output
+# (drm/gpu); forcing the decoder per-file with --vd=h264_v4l2m2m instead falls
+# back to software whenever a real display VO is active. mpv auto-selects the
+# right underlying decoder per codec, so no per-codec table is needed.
+HWDEC = "v4l2m2m-copy"
 
 
 class MpvIPC:
@@ -52,12 +45,13 @@ class MpvIPC:
             # GPU output (V3D) scales on the GPU instead of the CPU — essential
             # on a Pi when the panel resolution differs from the video size.
             vo_args = ["--vo=gpu", "--gpu-context=drm"]
+        hwdec = HWDEC if cfg["settings"].get("hw_decode", True) else "no"
         args = [
             "mpv",
             "--idle=yes",
             "--force-window=no",
             *vo_args,
-            "--hwdec=no",
+            "--hwdec=" + hwdec,
             "--keep-open=no",
             "--no-config",
             "--no-osc",
@@ -364,11 +358,7 @@ class PlayerEngine:
                 eff_len = float(tout) - tin
             elif item.get("_duration"):
                 eff_len = float(item["_duration"]) - tin
-            # hardware decode via V4L2 mem2mem, selected by codec
-            if config.load()["settings"].get("hw_decode", True):
-                dec = V4L2M2M.get(item.get("_codec"))
-                if dec:
-                    opts.append("vd=" + dec)
+            # hardware decode is handled globally via --hwdec (see _mpv_args)
         optstr = ",".join(opts)
         # loadfile <url> replace <index=0> <options>
         self.mpv.command("loadfile", item["_abs"], "replace", 0, optstr)
