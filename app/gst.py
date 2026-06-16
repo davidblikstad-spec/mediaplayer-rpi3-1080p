@@ -112,6 +112,15 @@ class GstPlayer:
         if self._audio_device:
             sink.set_property("device", self._audio_device)
         sink.set_property("alignment-threshold", 1 * Gst.SECOND)
+        # Live streams run off the system clock, so the sink must slave its HDMI
+        # hardware clock to it. The default "skew" method corrects drift by
+        # jumping the audio pointer — an audible drop every few seconds. Use
+        # "resample" so drift is corrected smoothly. (No effect on local files,
+        # where alsasink is itself the clock master.)
+        try:
+            sink.set_property("slave-method", "resample")
+        except Exception:
+            pass
         return sink
 
     def restart(self):
