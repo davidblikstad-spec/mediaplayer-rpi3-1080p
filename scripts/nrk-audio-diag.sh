@@ -20,6 +20,7 @@ PY
 )
 [ -n "${URL:-}" ] || { echo "could not resolve NRK url"; exit 1; }
 
+DUR="${2:-25}"          # seconds per device (the drop only shows after ~5s)
 if [ $# -ge 1 ]; then
   DEVICES=("$1")
 else
@@ -37,9 +38,9 @@ for DEV in "${DEVICES[@]}"; do
   echo
   echo "############################################################"
   echo "### TEST $i/${#DEVICES[@]}: $DEV"
-  echo "### LISTEN NOW for ~9s — is it smooth or dropping?"
+  echo "### LISTEN NOW for ~${DUR}s — smooth, or does it start dropping?"
   echo "############################################################"
-  GST_DEBUG=1 timeout -k3 9 gst-launch-1.0 -q playbin3 uri="$URL" flags=0x13 \
+  GST_DEBUG=1 timeout -k3 "$DUR" gst-launch-1.0 -q playbin3 uri="$URL" flags=0x13 \
     video-sink=fakesink audio-sink="alsasink device=$DEV" >/tmp/nrk-dev.log 2>&1
   if grep -qiE "Unknown PCM|No such device|could not open|cannot find card" /tmp/nrk-dev.log; then
     echo ">>> $DEV : FAILED TO OPEN CLEANLY (see error)"
