@@ -1,0 +1,415 @@
+"use strict";
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+let cfg = { playlists: [], schedules: [], settings: {} };
+let mediaList = [];
+let currentPlaylistId = null;
+
+async function api(method, path, body) {
+  const opt = { method, headers: {} };
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  if (r.status === 401) { location.href = "/login"; return; }
+  const ct = r.headers.get("content-type") || "";
+  return ct.includes("json") ? r.json() : r.text();
+}
+
+/* ---------- tabs ---------- */
+$$("#tabs button").forEach(b => b.onclick = () => {
+  $$("#tabs button").forEach(x => x.classList.remove("active"));
+  $$(".tab").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  $("#tab-" + b.dataset.tab).classList.add("active");
+  if (b.dataset.tab === "media") loadMedia();
+});
+
+/* ---------- load config + media ---------- */
+async function loadConfig() {
+  cfg = await api("GET", "/api/config");
+  renderPlaylistSelect();
+  renderSchedules();
+  renderSettings();
+  renderQuickplay();
+}
+async function loadMedia() {
+  mediaList = await api("GET", "/api/media") || [];
+  renderMediaGrid();
+  renderDefaultSelect();
+}
+
+/* ---------- NOW PLAYING ---------- */
+async function pollState() {
+  const s = await api("GET", "/api/state");
+  if (!s) return;
+  const p = s.player || {};
+  const fmt = t => t == null ? "–" : (Math.floor(t / 60) + ":" + String(Math.floor(t % 60)).padStart(2, "0"));
+  $("#status-box").innerHTML = `
+    <div><b>Playing</b> ${p.current ? esc(p.current.file) : (p.playing_default ? "default content" : "nothing")}</div>
+    <div><b>Playlist</b> ${p.playlist_name ? esc(p.playlist_name) : "–"} ${p.count ? `(${p.index + 1}/${p.count})` : ""}</div>
+    <div><b>Position</b> ${fmt(p.time_pos)} / ${fmt(p.duration)}</div>
+    <div><b>Volume</b> ${p.volume != null ? Math.round(p.volume) : "–"}</div>
+    <div><b>State</b> ${p.paused ? "paused" : (p.current ? "playing" : "idle")} · mpv ${s.mpv_alive ? "ok" : "down"}</div>`;
+}
+function renderQuickplay() {
+  $("#quickplay").innerHTML = "";
+  cfg.playlists.forEach(pl => {
+    const b = document.createElement("button");
+    b.textContent = "▶ " + pl.name;
+    b.onclick = () => api("POST", "/api/play/" + pl.id);
+    $("#quickplay").appendChild(b);
+  });
+}
+$("#btn-pause").onclick = () => api("POST", "/api/pause");
+$("#btn-next").onclick = () => api("POST", "/api/next");
+$("#btn-stop").onclick = () => api("POST", "/api/stop");
+$$("[data-cec]").forEach(b => b.onclick = async () => {
+  const r = await api("POST", "/api/cec", { action: b.dataset.cec });
+  $("#cec-out").textContent = (r.ok ? "OK\n" : "FAILED\n") + (r.output || "");
+});
+
+/* snapshot refresh */
+let snapTimer = null;
+function snapshotTick() {
+  if (!$("#snap-auto").checked) return;
+  if (!$("#tab-now").classList.contains("active")) return;
+  const img = $("#snapshot");
+  const probe = new Image();
+  probe.onload = () => { img.src = probe.src; img.style.display = "block"; $("#snapshot-empty").style.display = "none"; };
+  probe.onerror = () => { img.style.display = "none"; $("#snapshot-empty").style.display = "block"; };
+  probe.src = "/api/snapshot?t=" + Date.now();
+}
+
+/* ---------- PLAYLISTS ---------- */
+function renderPlaylistSelect() {
+  const sel = $("#pl-select");
+  sel.innerHTML = "";
+  cfg.playlists.forEach(pl => {
+    const o = document.createElement("option");
+    o.value = pl.id; o.textContent = pl.name; sel.appendChild(o);
+  });
+  if (cfg.playlists.length) {
+    if (!cfg.playlists.find(p => p.id === currentPlaylistId)) currentPlaylistId = cfg.playlists[0].id;
+    sel.value = currentPlaylistId;
+  } else currentPlaylistId = null;
+  renderPlaylistItems();
+}
+$("#pl-select").onchange = e => { currentPlaylistId = e.target.value; renderPlaylistItems(); };
+
+function curPlaylist() { return cfg.playlists.find(p => p.id === currentPlaylistId); }
+
+function renderPlaylistItems() {
+  const pl = curPlaylist();
+  const tb = $("#pl-items tbody");
+  tb.innerHTML = "";
+  if (!pl) { $("#pl-loop").checked = false; return; }
+  $("#pl-loop").checked = !!pl.loop_playlist;
+  pl.items.forEach((it, i) => tb.appendChild(itemRow(it, i)));
+}
+
+function itemRow(it, i) {
+  const tr = document.createElement("tr");
+  const isImg = it.type === "image";
+  const cell = (html) => { const td = document.createElement("td"); td.innerHTML = html; return td; };
+  // order controls
+  const td0 = document.createElement("td");
+  td0.innerHTML = `<button class="small up">↑</button><button class="small down">↓</button>`;
+  tr.appendChild(td0);
+  tr.appendChild(cell(`<span title="${esc(it.file)}">${esc(it.file)}</span>`));
+  tr.appendChild(cell(it.type));
+  // in
+  tr.appendChild(cell(isImg ? "–" : `<input class="in" type="number" min="0" step="0.1" value="${it.in ?? 0}">`));
+  // out / duration
+  tr.appendChild(cell(isImg
+    ? `<input class="dur" type="number" min="1" step="1" value="${it.duration ?? 10}"> s`
+    : `<input class="out" type="number" min="0" step="0.1" value="${it.out ?? ""}" placeholder="end">`));
+  // loops
+  tr.appendChild(cell(isImg ? "1" : `<input class="loop" value="${it.loop ?? 1}">`));
+  // volume
+  tr.appendChild(cell(isImg ? "–" : `<input class="vol" type="number" min="0" max="130" value="${it.volume ?? 100}">`));
+  // fades
+  tr.appendChild(cell(isImg ? "–" : `<input class="fin" type="number" min="0" step="0.1" value="${it.fade_in ?? 0}">`));
+  tr.appendChild(cell(isImg ? "–" : `<input class="fout" type="number" min="0" step="0.1" value="${it.fade_out ?? 0}">`));
+  // actions
+  const tda = document.createElement("td");
+  tda.innerHTML = `<button class="small prev">▶</button><button class="small danger del">✕</button>`;
+  tr.appendChild(tda);
+
+  td0.querySelector(".up").onclick = () => moveItem(i, -1);
+  td0.querySelector(".down").onclick = () => moveItem(i, 1);
+  tda.querySelector(".del").onclick = () => { curPlaylist().items.splice(i, 1); renderPlaylistItems(); };
+  tda.querySelector(".prev").onclick = () => previewMedia(it.file, it.type);
+  return tr;
+}
+function moveItem(i, d) {
+  const items = curPlaylist().items;
+  const j = i + d;
+  if (j < 0 || j >= items.length) return;
+  [items[i], items[j]] = [items[j], items[i]];
+  renderPlaylistItems();
+}
+function collectItems() {
+  const rows = $$("#pl-items tbody tr");
+  const pl = curPlaylist();
+  return rows.map((tr, i) => {
+    const src = pl.items[i];
+    const g = (c) => tr.querySelector("." + c);
+    const o = { id: src.id, file: src.file, type: src.type };
+    if (src.type === "image") {
+      o.duration = parseFloat(g("dur").value) || 10;
+      o.loop = 1;
+    } else {
+      o.in = parseFloat(g("in").value) || 0;
+      o.out = g("out").value === "" ? null : parseFloat(g("out").value);
+      const lv = g("loop").value.trim();
+      o.loop = (lv === "" || lv === "0") ? "always" : (isNaN(+lv) ? lv : +lv);
+      o.volume = parseInt(g("vol").value) || 100;
+      o.fade_in = parseFloat(g("fin").value) || 0;
+      o.fade_out = parseFloat(g("fout").value) || 0;
+    }
+    return o;
+  });
+}
+async function persistPlaylist(pl) {
+  await api("PUT", "/api/playlists/" + pl.id, { items: pl.items, loop_playlist: pl.loop_playlist });
+}
+$("#pl-save").onclick = async () => {
+  const pl = curPlaylist(); if (!pl) return;
+  pl.items = collectItems();
+  pl.loop_playlist = $("#pl-loop").checked;
+  await persistPlaylist(pl);
+  toast("Playlist saved");
+};
+async function createPlaylist() {
+  const name = prompt("Playlist name", "New playlist"); if (!name) return null;
+  const pl = await api("POST", "/api/playlists", { name });
+  await loadConfig(); currentPlaylistId = pl.id; renderPlaylistSelect();
+  return curPlaylist();
+}
+$("#pl-new").onclick = createPlaylist;
+$("#pl-rename").onclick = async () => {
+  const pl = curPlaylist(); if (!pl) return;
+  const name = prompt("Rename playlist", pl.name); if (!name) return;
+  await api("PUT", "/api/playlists/" + pl.id, { name });
+  await loadConfig();
+};
+$("#pl-delete").onclick = async () => {
+  const pl = curPlaylist(); if (!pl) return;
+  if (!confirm("Delete playlist '" + pl.name + "'?")) return;
+  await api("DELETE", "/api/playlists/" + pl.id);
+  currentPlaylistId = null; await loadConfig();
+};
+$("#pl-play").onclick = async () => { const pl = curPlaylist(); if (pl) { await api("POST", "/api/play/" + pl.id); toast("Playing " + pl.name); } };
+$("#pl-add").onclick = async () => {
+  let pl = curPlaylist();
+  if (!pl) { pl = await createPlaylist(); if (!pl) return; }
+  openPicker(async (m) => {
+    const cur = curPlaylist(); if (!cur) return;
+    cur.items = collectItems();              // keep any unsaved edits in existing rows
+    cur.loop_playlist = $("#pl-loop").checked;
+    const it = { id: rid(), file: m.file, type: m.type };
+    if (m.type === "image") { it.duration = 10; it.loop = 1; }
+    else { it.in = 0; it.out = null; it.loop = 1; it.volume = 100; it.fade_in = 0; it.fade_out = 0; }
+    cur.items.push(it); renderPlaylistItems();
+    await persistPlaylist(cur);
+    toast("Added & saved " + it.file + " — pick more, or close (×).");
+  });
+};
+
+/* ---------- SCHEDULES ---------- */
+function renderSchedules() {
+  const wrap = $("#sch-list"); wrap.innerHTML = "";
+  if (!cfg.schedules.length) wrap.innerHTML = '<p class="muted">No schedules yet.</p>';
+  cfg.schedules.forEach(s => wrap.appendChild(schedCard(s)));
+}
+function schedCard(s) {
+  const card = document.createElement("div"); card.className = "card";
+  const plOpts = cfg.playlists.map(p => `<option value="${p.id}" ${p.id === s.playlist_id ? "selected" : ""}>${esc(p.name)}</option>`).join("");
+  card.innerHTML = `
+    <div class="sch">
+      <label class="inline"><input type="checkbox" class="en" ${s.enabled ? "checked" : ""}> enabled</label>
+      <input class="nm" value="${esc(s.name)}">
+      <select class="kind">
+        <option value="play_playlist" ${s.kind === "play_playlist" ? "selected" : ""}>Play playlist</option>
+        <option value="stop" ${s.kind === "stop" ? "selected" : ""}>Stop (default)</option>
+        <option value="cec" ${s.kind === "cec" ? "selected" : ""}>Display (CEC)</option>
+      </select>
+      <select class="pl" ${s.kind === "play_playlist" ? "" : "style=display:none"}>${plOpts}</select>
+      <select class="cec" ${s.kind === "cec" ? "" : "style=display:none"}>
+        <option value="on" ${s.cec_action === "on" ? "selected" : ""}>On</option>
+        <option value="off" ${s.cec_action === "off" ? "selected" : ""}>Off</option>
+        <option value="source" ${s.cec_action === "source" ? "selected" : ""}>Set source</option>
+      </select>
+      <label class="inline">at <input class="tm" type="time" value="${s.time}"></label>
+      <span class="spacer"></span>
+      <button class="save primary small">Save</button>
+      <button class="del danger small">Delete</button>
+    </div>
+    <div class="days">${DAYS.map((d, i) => `<label>${d}<input type="checkbox" class="day" data-d="${i}" ${(s.days || []).includes(i) ? "checked" : ""}></label>`).join("")}</div>
+    <div class="muted next"></div>`;
+  const kindSel = card.querySelector(".kind");
+  kindSel.onchange = () => {
+    card.querySelector(".pl").style.display = kindSel.value === "play_playlist" ? "" : "none";
+    card.querySelector(".cec").style.display = kindSel.value === "cec" ? "" : "none";
+  };
+  card.querySelector(".save").onclick = async () => {
+    const body = {
+      enabled: card.querySelector(".en").checked,
+      name: card.querySelector(".nm").value,
+      kind: kindSel.value,
+      playlist_id: card.querySelector(".pl").value,
+      cec_action: card.querySelector(".cec").value,
+      time: card.querySelector(".tm").value,
+      days: $$(".day", card).filter(c => c.checked).map(c => +c.dataset.d),
+    };
+    await api("PUT", "/api/schedules/" + s.id, body);
+    await loadConfig(); toast("Schedule saved");
+  };
+  card.querySelector(".del").onclick = async () => {
+    if (!confirm("Delete schedule?")) return;
+    await api("DELETE", "/api/schedules/" + s.id); await loadConfig();
+  };
+  return card;
+}
+$("#sch-new").onclick = async () => {
+  await api("POST", "/api/schedules", { name: "New schedule", kind: "play_playlist", time: "08:00", days: [0, 1, 2, 3, 4] });
+  await loadConfig();
+};
+
+/* ---------- MEDIA ---------- */
+function renderMediaGrid() {
+  const g = $("#media-grid"); g.innerHTML = "";
+  if (!mediaList.length) g.innerHTML = '<p class="muted">No media uploaded yet.</p>';
+  mediaList.forEach(m => {
+    const c = document.createElement("div"); c.className = "media-card";
+    const thumb = m.thumb ? `<img src="/thumb/${encodeURIComponent(m.thumb)}">` : `<span class="muted">${m.type}</span>`;
+    const dur = m.duration ? " · " + Math.round(m.duration) + "s" : "";
+    c.innerHTML = `
+      <div class="thumb">${thumb}</div>
+      <div class="meta"><div class="name">${esc(m.file)}</div><div class="muted">${m.type}${dur} · ${(m.size / 1048576).toFixed(1)} MB</div></div>
+      <div class="actions"><button class="small prev">Preview</button><button class="small danger del">Delete</button></div>`;
+    c.querySelector(".thumb").onclick = () => previewMedia(m.file, m.type);
+    c.querySelector(".prev").onclick = () => previewMedia(m.file, m.type);
+    c.querySelector(".del").onclick = async () => {
+      if (!confirm("Delete " + m.file + "?")) return;
+      await api("DELETE", "/api/media/" + encodeURIComponent(m.file)); loadMedia();
+    };
+    g.appendChild(c);
+  });
+}
+$("#upload-btn").onclick = async () => {
+  const f = $("#upload-input").files[0];
+  if (!f) { alert("Choose a file"); return; }
+  $("#upload-status").textContent = "Uploading " + f.name + "…";
+  const fd = new FormData(); fd.append("file", f);
+  const r = await fetch("/api/upload", { method: "POST", body: fd });
+  $("#upload-status").textContent = r.ok ? "Uploaded" : "Upload failed";
+  $("#upload-input").value = "";
+  loadMedia();
+};
+
+/* ---------- SETTINGS ---------- */
+function renderSettings() {
+  const s = cfg.settings || {};
+  $("#set-cec-dev").value = s.cec_device || "/dev/cec0";
+  $("#set-cec-phys").value = s.cec_phys_addr || "";
+  $("#set-snap").value = s.screenshot_interval || 5;
+  $("#set-mpv").value = s.mpv_extra_args || "";
+  $("#set-hw").checked = s.hw_decode !== false;
+  $("#set-vo").value = s.video_out || "gpu";
+  $("#set-ao").value = s.audio_out || "auto";
+  $("#pw-user").value = (cfg.auth && cfg.auth.username) || "";
+  if (s.default_item) $("#set-default-dur").value = s.default_item.duration || 10;
+}
+function renderDefaultSelect() {
+  const sel = $("#set-default"); sel.innerHTML = '<option value="">— none (black screen) —</option>';
+  mediaList.forEach(m => {
+    const o = document.createElement("option"); o.value = m.file; o.textContent = m.file + " (" + m.type + ")";
+    sel.appendChild(o);
+  });
+  if (cfg.settings.default_item) sel.value = cfg.settings.default_item.file;
+}
+$("#set-save").onclick = async () => {
+  const file = $("#set-default").value;
+  let def = null;
+  if (file) {
+    const m = mediaList.find(x => x.file === file) || { type: "video" };
+    def = { file, type: m.type, loop: "always", volume: 100, fade_in: 0, fade_out: 0 };
+    if (m.type === "image") def.duration = parseInt($("#set-default-dur").value) || 10;
+  }
+  cfg = await api("PUT", "/api/settings", {
+    cec_device: $("#set-cec-dev").value,
+    cec_phys_addr: $("#set-cec-phys").value,
+    screenshot_interval: parseInt($("#set-snap").value) || 5,
+    mpv_extra_args: $("#set-mpv").value,
+    hw_decode: $("#set-hw").checked,
+    video_out: $("#set-vo").value,
+    audio_out: $("#set-ao").value,
+    default_item: def,
+  });
+  toast("Settings saved");
+};
+$("#mpv-restart").onclick = async () => {
+  $("#mpv-restart-status").textContent = "Saving + restarting player…";
+  await api("PUT", "/api/settings", { video_out: $("#set-vo").value, hw_decode: $("#set-hw").checked });
+  await api("POST", "/api/mpv/restart");
+  $("#mpv-restart-status").textContent = "Player restarted with " + $("#set-vo").value.toUpperCase() + " output.";
+};
+$("#cec-detect").onclick = async () => {
+  $("#cec-info").textContent = "Scanning…";
+  const r = await api("GET", "/api/cec/info");
+  $("#cec-info").textContent = (r.phys_addr ? "Physical address: " + r.phys_addr + "\n\n" : "") + (r.output || "");
+  if (r.phys_addr && !$("#set-cec-phys").value) $("#set-cec-phys").value = r.phys_addr;
+};
+$("#pw-save").onclick = async () => {
+  const r = await api("PUT", "/api/password", {
+    username: $("#pw-user").value, old: $("#pw-old").value, new: $("#pw-new").value,
+  });
+  $("#pw-status").textContent = r.ok ? "Updated" : (r.error || "failed");
+  $("#pw-old").value = ""; $("#pw-new").value = "";
+};
+
+/* ---------- modal / picker / preview ---------- */
+function openModal(html) { $("#modal-content").innerHTML = ""; if (typeof html === "string") $("#modal-content").innerHTML = html; else $("#modal-content").appendChild(html); $("#modal").classList.remove("hidden"); }
+$("#modal-close").onclick = () => { $("#modal").classList.add("hidden"); $("#modal-content").innerHTML = ""; };
+$("#modal").onclick = e => { if (e.target.id === "modal") $("#modal-close").onclick(); };
+
+function previewMedia(file, type) {
+  const url = "/media/" + file.split("/").map(encodeURIComponent).join("/");
+  if (type === "image") openModal(`<h3>${esc(file)}</h3><img src="${url}">`);
+  else if (type === "video") openModal(`<h3>${esc(file)}</h3><video src="${url}" controls autoplay style="max-width:80vw"></video><p class="muted">In-browser preview depends on browser codec support (mp4/webm work best).</p>`);
+  else openModal(`<h3>${esc(file)}</h3><audio src="${url}" controls autoplay></audio>`);
+}
+async function openPicker(onPick) {
+  if (!mediaList.length) await loadMedia();
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `<h3>Choose a file</h3><div class="picker-list"></div>`;
+  const list = wrap.querySelector(".picker-list");
+  mediaList.forEach(m => {
+    const c = document.createElement("div"); c.className = "media-card";
+    c.innerHTML = `<div class="thumb">${m.thumb ? `<img src="/thumb/${encodeURIComponent(m.thumb)}">` : `<span class="muted">${m.type}</span>`}</div><div class="meta"><div class="name">${esc(m.file)}</div></div>`;
+    c.onclick = () => onPick(m);
+    list.appendChild(c);
+  });
+  openModal(wrap);
+}
+
+/* ---------- utils ---------- */
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function rid() { return Math.random().toString(36).slice(2, 14); }
+let toastTimer;
+function toast(msg) {
+  let t = $("#toast");
+  if (!t) { t = document.createElement("div"); t.id = "toast"; t.style.cssText = "position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#23272f;border:1px solid #2e333d;padding:.5rem 1rem;border-radius:8px;z-index:30"; document.body.appendChild(t); }
+  t.textContent = msg; t.style.display = "block";
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = "none", 2000);
+}
+
+/* ---------- boot ---------- */
+loadConfig();
+loadMedia();
+pollState();
+setInterval(pollState, 2000);
+setInterval(snapshotTick, 4000);
+snapshotTick();
