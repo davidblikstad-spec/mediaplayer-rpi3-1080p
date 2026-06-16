@@ -52,11 +52,16 @@ def create_app():
     mpvmod.engine = mpvmod.PlayerEngine(mpvmod.mpv, log=log)
     app.scheduler = Scheduler(mpvmod.engine, log=log)
     app.scheduler.reload()
-    # start playing the default item on boot
+    # on boot, resume whatever the schedule says should be active now
+    # (falls back to the default item if nothing is scheduled)
     try:
-        mpvmod.engine.play_default()
+        app.scheduler.catch_up()
     except Exception as e:
-        log("play_default failed: %s" % e)
+        log("boot catch-up failed: %s" % e)
+        try:
+            mpvmod.engine.play_default()
+        except Exception as e2:
+            log("play_default failed: %s" % e2)
 
     # ================= auth / pages =======================================
     @app.route("/setup", methods=["GET", "POST"])
