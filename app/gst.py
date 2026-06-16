@@ -31,6 +31,12 @@ from . import config, media, nrk  # noqa: E402
 
 Gst.init(None)
 
+# Streams play with audio sync=false (the live clock is too jittery to sync to),
+# which makes the audio run slightly ahead of the (clock-synced) video. Delay the
+# audio by this much to line them back up. Tunable; raise if audio still leads,
+# lower if it lags.
+STREAM_AV_DELAY_MS = 220
+
 
 class GstPlayer:
     """Owns the GStreamer pipelines and exposes mpv-style playback primitives."""
@@ -53,6 +59,7 @@ class GstPlayer:
         self._stop = False
         self._watcher = None
         self._asink = None                   # alsasink element (clock-sync toggle)
+        self._adelay = None                  # queue before the sink (A/V delay)
         self._shot_lock = threading.Lock()   # single-flight HDMI snapshots
 
     # ---- lifecycle --------------------------------------------------------
@@ -97,19 +104,30 @@ class GstPlayer:
         self.playbin = pb
 
     def _make_audio_sink(self):
-        """Build an explicit alsasink (default device, or the selected one) and
-        keep a reference so load() can toggle clock-sync per item. Falls back to
-        playbin's default sink if alsasink is absent."""
+        """Build the audio sink as `queue ! alsasink` so load() can toggle
+        clock-sync and an A/V delay per item (streams play sync=false, which
+        needs a small audio delay to match video). Falls back to playbin's
+        default sink if alsasink is absent."""
         sink = Gst.ElementFactory.make("alsasink", None)
         if sink is None:
             self.log("alsasink unavailable (install gstreamer1.0-alsa); "
                      "using default audio output")
-            self._asink = None
+            self._asink = self._adelay = None
             return None
         if self._audio_device:
             sink.set_property("device", self._audio_device)
+        q = Gst.ElementFactory.make("queue", None)
+        q.set_property("max-size-time", 10 * Gst.SECOND)
+        q.set_property("max-size-bytes", 0)
+        q.set_property("max-size-buffers", 0)
+        binn = Gst.Bin.new("asinkbin")
+        binn.add(q)
+        binn.add(sink)
+        q.link(sink)
+        binn.add_pad(Gst.GhostPad.new("sink", q.get_static_pad("sink")))
         self._asink = sink
-        return sink
+        self._adelay = q
+        return binn
 
     def restart(self):
         """Tear down and rebuild the pipelines (e.g. after a wedged sink)."""
@@ -157,6 +175,11 @@ class GstPlayer:
         # for proper A/V lip-sync.
         if self._asink is not None:
             self._asink.set_property("sync", not is_url)
+        if self._adelay is not None:
+            # delay audio to match video only for streams (sync=false); 0 for
+            # files, where sync=true keeps A/V aligned on its own
+            self._adelay.set_property(
+                "min-threshold-time", STREAM_AV_DELAY_MS * Gst.MSECOND if is_url else 0)
         pb.set_state(Gst.State.READY)            # flush any previous stream
         pb.set_property("uri", src if is_url else Gst.filename_to_uri(src))
         pb.set_state(Gst.State.PAUSED)
