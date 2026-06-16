@@ -56,6 +56,7 @@ class GstPlayer:
     # ---- lifecycle --------------------------------------------------------
     def start(self):
         self._stop = False
+        self._blank_console()
         try:
             self.set_audio_device(config.load()["settings"].get("audio_out"))
         except Exception:
@@ -63,6 +64,21 @@ class GstPlayer:
         self._build_playbin()
         self._watcher = threading.Thread(target=self._watch_bus, daemon=True)
         self._watcher.start()
+
+    def _blank_console(self):
+        """Clear the text console and hide its cursor so the bare framebuffer
+        shows black, not boot/login text. kmssink briefly releases the DRM plane
+        between items; with the console buffer emptied, that gap shows black
+        instead of flashing the terminal. Runs as the tty1 session owner."""
+        for dev in ("/dev/tty1", "/dev/tty0"):
+            try:
+                with open(dev, "w") as t:
+                    # home, clear screen, clear scrollback, hide cursor
+                    t.write("\033[H\033[2J\033[3J\033[?25l")
+                    t.flush()
+                return
+            except Exception:
+                continue
 
     def _build_playbin(self):
         pb = Gst.ElementFactory.make("playbin3", "player")
