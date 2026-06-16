@@ -298,33 +298,54 @@ function renderMediaGrid() {
     g.appendChild(c);
   });
 }
-$("#upload-btn").onclick = async () => {
-  const f = $("#upload-input").files[0];
-  if (!f) { alert("Choose a file"); return; }
-  $("#upload-status").textContent = "Uploading " + f.name + "…";
+async function uploadOne(f) {
   const fd = new FormData(); fd.append("file", f);
-  let r, data;
-  try {
-    r = await fetch("/api/upload", { method: "POST", body: fd });
-    data = await r.json().catch(() => ({}));
-  } catch (e) {
-    $("#upload-status").textContent = "Upload failed (network/size)";
-    return;
-  }
-  if (!r.ok) {
-    $("#upload-status").textContent = "Upload failed" + (data && data.error ? ": " + data.error : "");
-    return;
-  }
-  if (data.transcode && data.transcode.needed) {
+  const r = await fetch("/api/upload", { method: "POST", body: fd });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data && data.error ? data.error : "network/size");
+  return data;
+}
+async function uploadFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  let done = 0, transcoding = false;
+  for (const f of files) {
     $("#upload-status").textContent =
-      `Uploaded. ${f.name} is ${data.transcode.from} — larger than 720p, so it's being auto-transcoded to 720p (this can take several minutes on the Pi).`;
+      `Uploading ${f.name}… (${done + 1}/${files.length})`;
+    try {
+      const data = await uploadOne(f);
+      if (data.transcode && data.transcode.needed) transcoding = true;
+    } catch (e) {
+      $("#upload-status").textContent = `Upload failed for ${f.name}: ${e.message}`;
+      loadMedia();
+      return;
+    }
+    done++;
+    loadMedia();
+  }
+  if (transcoding) {
+    $("#upload-status").textContent =
+      `Added ${done} file${done > 1 ? "s" : ""}. Any larger than 1080p are auto-transcoding to 1080p (can take a few minutes on the Pi).`;
     ensureTranscodePolling();
   } else {
-    $("#upload-status").textContent = "Uploaded";
+    $("#upload-status").textContent = `Added ${done} file${done > 1 ? "s" : ""}.`;
   }
-  $("#upload-input").value = "";
-  loadMedia();
+}
+$("#upload-btn").onclick = () => $("#upload-input").click();
+$("#upload-input").onchange = async (e) => {
+  await uploadFiles(e.target.files);
+  e.target.value = "";   // allow re-selecting the same file
 };
+(() => {
+  const dz = $("#dropzone");
+  if (!dz) return;
+  const stop = e => { e.preventDefault(); e.stopPropagation(); };
+  ["dragenter", "dragover"].forEach(ev =>
+    dz.addEventListener(ev, e => { stop(e); dz.classList.add("dragover"); }));
+  ["dragleave", "drop"].forEach(ev =>
+    dz.addEventListener(ev, e => { stop(e); dz.classList.remove("dragover"); }));
+  dz.addEventListener("drop", e => uploadFiles(e.dataTransfer.files));
+})();
 
 /* ---------- transcode progress ---------- */
 let transcodePollTimer = null;
@@ -340,7 +361,7 @@ async function pollTranscodes() {
     if (j.status === "running") active = true;
     if ((j.status === "done" || j.status === "error") && !transcodeSeen[k]) {
       transcodeSeen[k] = true;
-      if (j.status === "done") { toast("Transcoded to 720p: " + (j.result || j.file)); loadMedia(); }
+      if (j.status === "done") { toast("Transcoded to 1080p: " + (j.result || j.file)); loadMedia(); }
       else { toast("Transcode failed: " + j.file); }
     }
   });
@@ -358,7 +379,7 @@ function renderTranscodes(jobs) {
     const div = document.createElement("div");
     div.className = "transcode-job" + (j.status === "error" ? " error" : "");
     div.innerHTML =
-      `<div class="label"><span>Transcoding <b>${esc(j.file)}</b> (${esc(j.from || "")} → 720p)</span><span>${esc(right)}</span></div>` +
+      `<div class="label"><span>Transcoding <b>${esc(j.file)}</b> (${esc(j.from || "")} → 1080p)</span><span>${esc(right)}</span></div>` +
       (j.status === "error"
         ? `<div class="muted">${esc(j.error || "ffmpeg error")}</div>`
         : `<div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>`);

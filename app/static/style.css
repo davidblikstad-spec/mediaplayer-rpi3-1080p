@@ -42,6 +42,8 @@ label{font-size:.85rem;color:var(--muted)}
 .row label{display:flex;flex-direction:column;gap:.25rem}
 .inline{display:inline-flex;align-items:center;gap:.4rem;color:var(--fg)}
 .toolbar{display:flex;gap:.5rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap}
+.dropzone{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem;padding:.8rem 1rem;border:1.5px dashed var(--line);border-radius:9px;transition:border-color .15s,background .15s}
+.dropzone.dragover{border-color:var(--accent);background:rgba(79,140,255,.08)}
 .spacer{flex:1}
 .controls{display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0}
 .chips{display:flex;gap:.4rem;flex-wrap:wrap}

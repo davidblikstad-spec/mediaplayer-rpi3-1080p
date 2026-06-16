@@ -83,9 +83,10 @@
 
     <!-- MEDIA -->
     <section id="tab-media" class="tab">
-      <div class="toolbar">
-        <input type="file" id="upload-input">
-        <button id="upload-btn" class="primary">Upload</button>
+      <div id="dropzone" class="dropzone">
+        <button id="upload-btn" class="primary">+ Add media</button>
+        <input type="file" id="upload-input" accept="video/*,image/*" multiple hidden>
+        <span class="muted">or drag files here</span>
         <span id="upload-status" class="muted"></span>
       </div>
       <div id="transcode-list"></div>
