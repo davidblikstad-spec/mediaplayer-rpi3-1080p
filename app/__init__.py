@@ -44,6 +44,10 @@ def create_app():
     cfg = config.load()
     app.secret_key = cfg["settings"]["secret_key"]
     app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024 * 1024  # 16 GB uploads
+    # re-read templates from disk on each request so UI edits show on refresh
+    # without a service restart (cheap on a single-user admin UI)
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
+    app.jinja_env.auto_reload = True
 
     # ---- player + scheduler singletons -----------------------------------
     log = lambda m: print("[mediaplayer]", m, flush=True)
