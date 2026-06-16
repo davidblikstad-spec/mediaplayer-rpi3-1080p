@@ -303,11 +303,68 @@ $("#upload-btn").onclick = async () => {
   if (!f) { alert("Choose a file"); return; }
   $("#upload-status").textContent = "Uploading " + f.name + "…";
   const fd = new FormData(); fd.append("file", f);
-  const r = await fetch("/api/upload", { method: "POST", body: fd });
-  $("#upload-status").textContent = r.ok ? "Uploaded" : "Upload failed";
+  let r, data;
+  try {
+    r = await fetch("/api/upload", { method: "POST", body: fd });
+    data = await r.json().catch(() => ({}));
+  } catch (e) {
+    $("#upload-status").textContent = "Upload failed (network/size)";
+    return;
+  }
+  if (!r.ok) {
+    $("#upload-status").textContent = "Upload failed" + (data && data.error ? ": " + data.error : "");
+    return;
+  }
+  if (data.transcode && data.transcode.needed) {
+    $("#upload-status").textContent =
+      `Uploaded. ${f.name} is ${data.transcode.from} — larger than 1080p, so it's being auto-transcoded to 1080p (this can take several minutes on the Pi).`;
+    ensureTranscodePolling();
+  } else {
+    $("#upload-status").textContent = "Uploaded";
+  }
   $("#upload-input").value = "";
   loadMedia();
 };
+
+/* ---------- transcode progress ---------- */
+let transcodePollTimer = null;
+const transcodeSeen = {};   // file -> true once its done/error was reported
+function ensureTranscodePolling() { if (!transcodePollTimer) pollTranscodes(); }
+async function pollTranscodes() {
+  transcodePollTimer = null;
+  let jobs = await api("GET", "/api/transcode") || {};
+  renderTranscodes(jobs);
+  let active = false;
+  Object.keys(jobs).forEach(k => {
+    const j = jobs[k];
+    if (j.status === "running") active = true;
+    if ((j.status === "done" || j.status === "error") && !transcodeSeen[k]) {
+      transcodeSeen[k] = true;
+      if (j.status === "done") { toast("Transcoded to 1080p: " + (j.result || j.file)); loadMedia(); }
+      else { toast("Transcode failed: " + j.file); }
+    }
+  });
+  if (active) transcodePollTimer = setTimeout(pollTranscodes, 2000);
+}
+function renderTranscodes(jobs) {
+  const wrap = $("#transcode-list"); if (!wrap) return;
+  wrap.innerHTML = "";
+  // show only in-progress jobs and errors; completed ones drop off (file appears in grid)
+  Object.keys(jobs).forEach(k => {
+    const j = jobs[k];
+    if (j.status !== "running" && j.status !== "error") return;
+    const pct = j.status === "running" ? (j.percent || 0) : 0;
+    const right = j.status === "running" ? pct + "%" : "failed";
+    const div = document.createElement("div");
+    div.className = "transcode-job" + (j.status === "error" ? " error" : "");
+    div.innerHTML =
+      `<div class="label"><span>Transcoding <b>${esc(j.file)}</b> (${esc(j.from || "")} → 1080p)</span><span>${esc(right)}</span></div>` +
+      (j.status === "error"
+        ? `<div class="muted">${esc(j.error || "ffmpeg error")}</div>`
+        : `<div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>`);
+    wrap.appendChild(div);
+  });
+}
 
 /* ---------- SETTINGS ---------- */
 function renderSettings() {
@@ -409,6 +466,7 @@ function toast(msg) {
 /* ---------- boot ---------- */
 loadConfig();
 loadMedia();
+ensureTranscodePolling();   // resume showing any transcode already in progress
 pollState();
 setInterval(pollState, 2000);
 setInterval(snapshotTick, 4000);

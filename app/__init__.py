@@ -8,7 +8,7 @@ from flask import (Flask, jsonify, redirect, request, send_file,
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
-from . import cec, config, media, mpv as mpvmod
+from . import cec, config, media, transcode, mpv as mpvmod
 from .scheduler import Scheduler
 
 _snap_last = {"t": 0.0}
@@ -140,9 +140,24 @@ def create_app():
         if not f or not f.filename:
             return jsonify({"error": "no file"}), 400
         name = secure_filename(f.filename)
+        if not name:
+            return jsonify({"error": "bad filename"}), 400
         dest = os.path.join(config.MEDIA_DIR, name)
         f.save(dest)
-        return jsonify({"ok": True, "file": name, "type": media.media_type(name)})
+        resp = {"ok": True, "file": name, "type": media.media_type(name),
+                "transcode": {"needed": False}}
+        if media.media_type(name) == "video":
+            info = media.probe(name)
+            w, h, dur = info.get("width"), info.get("height"), info.get("duration")
+            if transcode.needs_transcode(w, h):
+                transcode.start(name, w, h, dur or 0, log=log)
+                resp["transcode"] = {"needed": True, "from": "%dx%d" % (w, h)}
+        return jsonify(resp)
+
+    @app.route("/api/transcode")
+    @login_required
+    def api_transcode():
+        return jsonify(transcode.jobs_snapshot())
 
     @app.route("/api/media/<path:rel>", methods=["DELETE"])
     @login_required

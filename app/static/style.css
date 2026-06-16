@@ -72,6 +72,13 @@ table.items input.vol{width:56px}
 .media-card .meta .name{word-break:break-all}
 .media-card .actions{display:flex;gap:.3rem;padding:0 .5rem .5rem}
 
+/* transcode progress */
+.transcode-job{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.6rem .7rem;margin-bottom:.8rem;font-size:.85rem}
+.transcode-job .label{display:flex;justify-content:space-between;gap:1rem;margin-bottom:.4rem}
+.transcode-job.error{border-color:#a33}
+.progress-track{height:8px;background:#000;border-radius:6px;overflow:hidden}
+.progress-fill{height:100%;width:0;background:var(--accent,#4a9eff);transition:width .4s ease}
+
 /* schedule cards */
 .sch{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap}
 .days{display:flex;gap:.2rem}
