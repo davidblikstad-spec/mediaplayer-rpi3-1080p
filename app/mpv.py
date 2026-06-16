@@ -43,13 +43,19 @@ class MpvIPC:
     def _mpv_args(self):
         cfg = config.load()
         vo = cfg["settings"].get("video_out", "gpu")
+        hw = cfg["settings"].get("hw_decode", True)
         if vo == "drm":
             vo_args = ["--vo=drm"]
+            if hw:
+                # Show HW-decoded (DRM-prime) frames on a vc4 HVS overlay plane
+                # with hardware YUV scaling, instead of downloading them and
+                # CPU-converting to the RGB primary plane (which pins the CPU).
+                vo_args.append("--drm-drmprime-video-plane=overlay")
         else:
             # GPU output (V3D) scales on the GPU instead of the CPU — essential
             # on a Pi when the panel resolution differs from the video size.
             vo_args = ["--vo=gpu", "--gpu-context=drm"]
-        hwdec = _hwdec_for(vo) if cfg["settings"].get("hw_decode", True) else "no"
+        hwdec = _hwdec_for(vo) if hw else "no"
         args = [
             "mpv",
             "--idle=yes",
