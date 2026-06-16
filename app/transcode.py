@@ -1,9 +1,10 @@
-"""Background transcoding of oversized uploads down to 1080p, with progress.
+"""Background transcoding of oversized uploads down to 720p, with progress.
 
-The Raspberry Pi 3 has no 4K hardware decode, so videos larger than 1080p
-stutter or fail on HDMI. After upload we detect such files and re-encode them
-to fit within 1920x1080 (H.264/AAC mp4) in a background thread, exposing
-progress so the web UI can show a bar.
+The Raspberry Pi 3 can hardware-*decode* video but has no working zero-copy
+display path (see mpv.py), so the GL VO uploads frames and 1080p is too heavy
+to play smoothly. 720p plays cleanly, so after upload we detect anything larger
+and re-encode it to fit within 1280x720 (H.264/AAC mp4) in a background thread,
+exposing progress so the web UI can show a bar.
 """
 import os
 import subprocess
@@ -11,7 +12,7 @@ import threading
 
 from . import media
 
-MAX_W, MAX_H = 1920, 1080
+MAX_W, MAX_H = 1280, 720
 
 # job registry, keyed by the uploaded file's media-relative name
 _jobs = {}

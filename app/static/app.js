@@ -317,7 +317,7 @@ $("#upload-btn").onclick = async () => {
   }
   if (data.transcode && data.transcode.needed) {
     $("#upload-status").textContent =
-      `Uploaded. ${f.name} is ${data.transcode.from} — larger than 1080p, so it's being auto-transcoded to 1080p (this can take several minutes on the Pi).`;
+      `Uploaded. ${f.name} is ${data.transcode.from} — larger than 720p, so it's being auto-transcoded to 720p (this can take several minutes on the Pi).`;
     ensureTranscodePolling();
   } else {
     $("#upload-status").textContent = "Uploaded";
@@ -340,7 +340,7 @@ async function pollTranscodes() {
     if (j.status === "running") active = true;
     if ((j.status === "done" || j.status === "error") && !transcodeSeen[k]) {
       transcodeSeen[k] = true;
-      if (j.status === "done") { toast("Transcoded to 1080p: " + (j.result || j.file)); loadMedia(); }
+      if (j.status === "done") { toast("Transcoded to 720p: " + (j.result || j.file)); loadMedia(); }
       else { toast("Transcode failed: " + j.file); }
     }
   });
@@ -358,7 +358,7 @@ function renderTranscodes(jobs) {
     const div = document.createElement("div");
     div.className = "transcode-job" + (j.status === "error" ? " error" : "");
     div.innerHTML =
-      `<div class="label"><span>Transcoding <b>${esc(j.file)}</b> (${esc(j.from || "")} → 1080p)</span><span>${esc(right)}</span></div>` +
+      `<div class="label"><span>Transcoding <b>${esc(j.file)}</b> (${esc(j.from || "")} → 720p)</span><span>${esc(right)}</span></div>` +
       (j.status === "error"
         ? `<div class="muted">${esc(j.error || "ffmpeg error")}</div>`
         : `<div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>`);

@@ -11,17 +11,13 @@ from . import config, media
 
 SOCKET_PATH = "/tmp/mediaplayer-mpv.sock"
 
-# Hardware decode on the Pi uses the V4L2 mem2mem codec block (/dev/video10),
-# engaged via mpv's --hwdec (set at startup; mpv auto-selects the right decoder
-# per codec). The mode must match the video output:
-#   vo=drm : "v4l2m2m" (non-copy) — decoded frames stay as DRM-prime buffers and
-#            are shown directly on a hardware plane (zero-copy, no CPU work).
-#   vo=gpu : "v4l2m2m-copy" — frames are pulled into system memory for the GL VO.
-# Using the copy mode with vo=drm forces a CPU YUV->RGB conversion per frame,
-# which pins ~2.5 cores on a Pi 3 and plays 1080p at ~0.25x. (Forcing the
-# decoder per-file via --vd= instead silently falls back to software entirely.)
-def _hwdec_for(vo):
-    return "v4l2m2m" if vo == "drm" else "v4l2m2m-copy"
+# Hardware decode uses the Pi's V4L2 mem2mem codec block (/dev/video10) via
+# mpv's --hwdec=v4l2m2m-copy (mpv auto-selects the decoder per codec). The Pi 3
+# + vc4-kms + mesa GLES 2.0 stack has no working *zero-copy* display path
+# (mpv's GL dmabuf interop won't load and the DRM overlay plane fails the vc4
+# atomic commit), so frames are copied to system memory and the GL VO uploads
+# them — fine for content sized to the player's limits (see transcode: 720p).
+HWDEC = "v4l2m2m-copy"
 
 
 class MpvIPC:
@@ -46,16 +42,11 @@ class MpvIPC:
         hw = cfg["settings"].get("hw_decode", True)
         if vo == "drm":
             vo_args = ["--vo=drm"]
-            if hw:
-                # Show HW-decoded (DRM-prime) frames on a vc4 HVS overlay plane
-                # with hardware YUV scaling, instead of downloading them and
-                # CPU-converting to the RGB primary plane (which pins the CPU).
-                vo_args.append("--drm-drmprime-video-plane=overlay")
         else:
-            # GPU output (V3D) scales on the GPU instead of the CPU — essential
-            # on a Pi when the panel resolution differs from the video size.
+            # GPU output (V3D) does the YUV->RGB and scaling, keeping the CPU
+            # free; the only path that reliably displays on this Pi.
             vo_args = ["--vo=gpu", "--gpu-context=drm"]
-        hwdec = _hwdec_for(vo) if hw else "no"
+        hwdec = HWDEC if hw else "no"
         args = [
             "mpv",
             "--idle=yes",
