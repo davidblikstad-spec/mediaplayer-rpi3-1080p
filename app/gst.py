@@ -31,11 +31,15 @@ from . import config, media, nrk  # noqa: E402
 
 Gst.init(None)
 
-# Streams play with audio sync=false (the live clock is too jittery to sync to),
-# which makes the audio run slightly ahead of the (clock-synced) video. Delay the
-# audio by this much (ms) to line them back up. Overridden by the
-# stream_av_delay_ms setting; this is just the fallback default.
-STREAM_AV_DELAY_MS = 150
+# Live streams start clock-synced (sync=true) so GStreamer aligns audio/video
+# from the first frames, then flip to sync=false after this many seconds to
+# free-float smoothly (the live clock is too jittery to keep syncing to without
+# dropouts). The first few seconds are drop-free, so the flip happens before any
+# starvation would begin.
+STREAM_SYNC_HOLD_S = 3.0
+# Optional extra audio delay (ms) applied after the flip, as a manual nudge if
+# the auto-alignment leaves a residual offset. Overridden by stream_av_delay_ms.
+STREAM_AV_DELAY_MS = 0
 
 
 class GstPlayer:
@@ -61,6 +65,7 @@ class GstPlayer:
         self._asink = None                   # alsasink element (clock-sync toggle)
         self._adelay = None                  # queue before the sink (A/V delay)
         self._av_delay_ms = STREAM_AV_DELAY_MS
+        self._sync_timer = None              # flips stream audio to free-float
         self._shot_lock = threading.Lock()   # single-flight HDMI snapshots
 
     # ---- lifecycle --------------------------------------------------------
@@ -171,16 +176,14 @@ class GstPlayer:
         pb = self.playbin
         if pb is None:
             return
-        # A live stream's clock is too jittery to sync the audio sink to (the
-        # decoded audio is fine and buffered, but clock-synced rendering stalls
-        # then bursts -> audible drops every few seconds). So for streams we let
-        # the audio device pace itself (sync=false). Local files keep sync=true
-        # for proper A/V lip-sync.
+        # Start clock-synced so A/V aligns from the first frames. Streams then
+        # flip to sync=false after STREAM_SYNC_HOLD_S (see _arm_sync_flip): a
+        # live clock is too jittery to keep syncing to (causes dropouts), but by
+        # then the alignment is established and audio free-floats from it. Local
+        # files stay synced for the whole playback.
         if self._asink is not None:
-            self._asink.set_property("sync", not is_url)
+            self._asink.set_property("sync", True)
         if self._adelay is not None:
-            # delay audio to match video only for streams (sync=false); 0 for
-            # files, where sync=true keeps A/V aligned on its own
             self._adelay.set_property(
                 "min-threshold-time", self._av_delay_ms * Gst.MSECOND if is_url else 0)
         pb.set_state(Gst.State.READY)            # flush any previous stream
@@ -196,6 +199,22 @@ class GstPlayer:
         pb.set_property("volume", self._volume / 100.0)
         self._active_bus = pb.get_bus()
         pb.set_state(Gst.State.PLAYING)
+        if is_url:
+            self._arm_sync_flip()
+
+    def _arm_sync_flip(self):
+        """After a short synced hold, flip the audio sink to free-float so a live
+        stream plays smoothly without re-syncing to its jittery clock."""
+        gen = self._gen
+        def flip():
+            if gen != self._gen or self._asink is None:
+                return
+            self._asink.set_property("sync", False)
+            self.log("stream audio: free-floating (sync off)")
+        t = threading.Timer(STREAM_SYNC_HOLD_S, flip)
+        t.daemon = True
+        self._sync_timer = t
+        t.start()
 
     def _play_image(self, path, dur):
         pipe = Gst.Pipeline.new("imgpipe")
@@ -245,6 +264,9 @@ class GstPlayer:
         if self._img_timer is not None:
             self._img_timer.cancel()
             self._img_timer = None
+        if self._sync_timer is not None:
+            self._sync_timer.cancel()
+            self._sync_timer = None
 
     def _stop_video(self):
         if self.playbin is not None:

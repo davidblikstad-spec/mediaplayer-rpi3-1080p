@@ -494,7 +494,7 @@ function renderSettings() {
   $("#set-cec-dev").value = s.cec_device || "/dev/cec0";
   $("#set-cec-phys").value = s.cec_phys_addr || "";
   $("#set-snap").value = s.screenshot_interval || 5;
-  $("#set-avdelay").value = s.stream_av_delay_ms ?? 150;
+  $("#set-avdelay").value = s.stream_av_delay_ms ?? 0;
   $("#set-ao").value = (s.audio_out || "auto").replace(/^alsa\//, "");
   $("#pw-user").value = (cfg.auth && cfg.auth.username) || "";
   if (s.default_item) $("#set-default-dur").value = s.default_item.duration || 10;
