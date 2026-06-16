@@ -88,6 +88,7 @@ class GstPlayer:
             return
         vsink = Gst.ElementFactory.make("kmssink", "vsink")
         if vsink is not None:
+            vsink.set_property("enable-last-sample", True)  # for cheap snapshots
             pb.set_property("video-sink", vsink)
         asink = self._make_audio_sink()
         if asink is not None:
@@ -304,50 +305,127 @@ class GstPlayer:
             self._audio_device = name
         self.log("audio device set to %s" % (self._audio_device or "default"))
 
+    # DRM/raw fourcc -> GStreamer raw format, for packed 4:2:0 frames we can
+    # re-wrap and JPEG-encode cheaply
+    _PACKED_420 = {"YU12": "I420", "YV12": "YV12", "NV12": "NV12", "NV21": "NV21"}
+
     def screenshot(self, path):
-        """Refresh the live HDMI preview at `path` by decoding one frame from
-        the current source (kmssink can't be read back). Runs in the background
-        and single-flight: a grab from a live HLS URL is expensive (connect +
-        AES-decrypt + decode), so overlapping/back-to-back ffmpegs would pile up
-        and saturate the Pi's CPU — which starves the audio thread and makes the
-        stream's audio drop. We therefore allow only one at a time, cap it to a
-        single ffmpeg thread, and never block the caller."""
+        """Refresh the live HDMI preview at `path`. Single-flight + background so
+        snapshots never pile up and starve the audio thread. Cheap path: grab the
+        frame playbin already decoded (no URL re-decode / AES / network). Falls
+        back to a one-frame ffmpeg decode for images or odd pixel layouts."""
         if not self._shot_lock.acquire(blocking=False):
             return False                      # one already in flight; skip
+
+        def run():
+            try:
+                if not self._grab_from_pipeline(path):
+                    self._grab_with_ffmpeg(path)
+            finally:
+                self._shot_lock.release()
+        threading.Thread(target=run, daemon=True).start()
+        return True
+
+    def _grab_from_pipeline(self, path):
+        """Tap playbin's last decoded frame and JPEG-encode it. Returns False
+        (so the caller can fall back) if there's no usable frame."""
+        pb = self.playbin
+        if pb is None or self._cur_kind == "image":
+            return False
+        try:
+            sample = pb.get_property("sample")
+        except Exception:
+            sample = None
+        if sample is None:
+            return False
+        st = sample.get_caps().get_structure(0)
+        ok_w, w = st.get_int("width")
+        ok_h, h = st.get_int("height")
+        fmt = self._PACKED_420.get(st.get_string("drm-format") or "")
+        if fmt is None:                       # plain system-memory raw?
+            f2 = st.get_string("format")
+            fmt = f2 if f2 in self._PACKED_420.values() else None
+        if not (ok_w and ok_h and fmt):
+            return False
+        buf = sample.get_buffer()
+        ok, mi = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return False
+        try:
+            if mi.size != w * h * 3 // 2:     # not tightly packed -> bail
+                return False
+            data = bytes(mi.data)
+        finally:
+            buf.unmap(mi)
+        tw = 640
+        th = max(2, int(round(tw * h / w)) & ~1)
+        desc = ("appsrc name=src format=time "
+                "caps=video/x-raw,format=%s,width=%d,height=%d,framerate=25/1 "
+                "! videoconvert ! videoscale ! video/x-raw,width=%d,height=%d "
+                "! jpegenc quality=70 ! appsink name=out max-buffers=1"
+                % (fmt, w, h, tw, th))
+        try:
+            conv = Gst.parse_launch(desc)
+        except Exception:
+            return False
+        try:
+            src = conv.get_by_name("src")
+            out = conv.get_by_name("out")
+            conv.set_state(Gst.State.PLAYING)
+            src.emit("push-buffer", Gst.Buffer.new_wrapped(data))
+            src.emit("end-of-stream")
+            s = out.emit("try-pull-sample", 4 * Gst.SECOND)
+            if not s:
+                return False
+            b = s.get_buffer()
+            ok, mi = b.map(Gst.MapFlags.READ)
+            if not ok:
+                return False
+            try:
+                jpg = bytes(mi.data)
+            finally:
+                b.unmap(mi)
+            tmp = path + ".tmp.jpg"
+            with open(tmp, "wb") as f:
+                f.write(jpg)
+            os.replace(tmp, path)
+            return True
+        except Exception:
+            return False
+        finally:
+            conv.set_state(Gst.State.NULL)
+
+    def _grab_with_ffmpeg(self, path):
+        """Fallback: decode one frame from the source with ffmpeg (one thread)."""
         with self._lock:
             src = self._cur_path
             kind = self._cur_kind
         is_url = bool(src) and src.startswith(("http://", "https://"))
         if not src or (not is_url and not os.path.exists(src)):
-            self._shot_lock.release()
             return False
         pos = self.get_time_pos()
         if pos is None:
             pos = self._cur_start
         cmd = ["ffmpeg", "-y", "-nostdin", "-threads", "1"]
-        # local files: seek to the live position; streams/images: just grab one
         if kind not in ("image", "stream") and not is_url:
             cmd += ["-ss", "%.3f" % max(0.0, pos)]
         tmp = path + ".tmp.jpg"
         cmd += ["-i", src, "-frames:v", "1", "-q:v", "3",
                 "-vf", "scale=640:-2", tmp]
-
-        def run():
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=15)
+            if os.path.exists(tmp):
+                os.replace(tmp, path)
+                return True
+        except Exception:
+            pass
+        finally:
             try:
-                subprocess.run(cmd, capture_output=True, timeout=15)
                 if os.path.exists(tmp):
-                    os.replace(tmp, path)     # atomic; never serve a partial
-            except Exception:
+                    os.remove(tmp)
+            except OSError:
                 pass
-            finally:
-                try:
-                    if os.path.exists(tmp):
-                        os.remove(tmp)
-                except OSError:
-                    pass
-                self._shot_lock.release()
-        threading.Thread(target=run, daemon=True).start()
-        return True
+        return False
 
     # ---- bus watching -----------------------------------------------------
     def _watch_bus(self):
