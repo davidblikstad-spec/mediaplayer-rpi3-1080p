@@ -31,8 +31,8 @@ if [ $# -ge 1 ]; then
 else
   SINKS=(
     "alsasink device=$DEV"
-    "audiorate ! audioconvert ! audioresample ! alsasink device=$DEV"
-    "audiorate ! audioconvert ! audioresample ! alsasink device=$DEV alignment-threshold=40000000"
+    "alsasink device=$DEV sync=false"
+    "alsasink device=$DEV sync=false buffer-time=2000000"
   )
 fi
 
@@ -52,4 +52,4 @@ for SINK in "${SINKS[@]}"; do
   sleep 1
 done
 echo
-echo "Done. Which TEST number stayed smooth?  (1=baseline, 2=audiorate, 3=audiorate+40ms align)"
+echo "Done. Which TEST number stayed smooth?  (1=baseline, 2=sync=false, 3=sync=false+2s buffer)"
