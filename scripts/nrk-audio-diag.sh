@@ -45,10 +45,11 @@ for SINK in "${SINKS[@]}"; do
   echo "### TEST $i/${#SINKS[@]}: $SINK"
   echo "### LISTEN ~${DUR}s — smooth, or starts dropping after a few s?"
   echo "############################################################"
-  GST_DEBUG=1 timeout -k3 "$DUR" gst-launch-1.0 -q playbin3 uri="$URL" flags=0x13 \
-    video-sink=fakesink audio-sink="$SINK" >/tmp/nrk-dev.log 2>&1
-  grep -qiE "Unknown PCM|No such device|could not open|cannot find card" /tmp/nrk-dev.log \
-    && { echo ">>> failed to open:"; grep -iE "Unknown PCM|No such|could not open|cannot find" /tmp/nrk-dev.log | head -1; }
+  GST_DEBUG="2,alsa:6,audiobasesink:5" timeout -k3 "$DUR" gst-launch-1.0 playbin3 uri="$URL" flags=0x13 \
+    video-sink=fakesink audio-sink="$SINK" >"/tmp/nrk-test-$i.log" 2>&1
+  echo ">>> log: /tmp/nrk-test-$i.log ($(wc -l < /tmp/nrk-test-$i.log) lines)"
+  grep -qiE "Unknown PCM|No such device|could not open|cannot find card" "/tmp/nrk-test-$i.log" \
+    && { echo ">>> failed to open:"; grep -iE "Unknown PCM|No such|could not open|cannot find" "/tmp/nrk-test-$i.log" | head -1; }
   sleep 1
 done
 echo
