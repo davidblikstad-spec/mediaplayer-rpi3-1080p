@@ -26,13 +26,14 @@ PY
 
 DEV="plughw:CARD=vc4hdmi,DEV=0"
 DUR="${2:-30}"
+Q="queue max-size-buffers=0 max-size-bytes=0 max-size-time=8000000000"
 if [ $# -ge 1 ]; then
   SINKS=("$1")
 else
   SINKS=(
     "alsasink device=$DEV"
-    "alsasink device=$DEV provide-clock=false slave-method=resample"
-    "alsasink device=$DEV provide-clock=false slave-method=skew"
+    "$Q ! audioconvert ! audioresample ! alsasink device=$DEV"
+    "$Q ! audioconvert ! audioresample ! alsasink device=$DEV provide-clock=false slave-method=resample"
   )
 fi
 
@@ -51,4 +52,4 @@ for SINK in "${SINKS[@]}"; do
   sleep 1
 done
 echo
-echo "Done. Which TEST number stayed smooth?  (1=baseline, 2=slave+resample, 3=slave+skew)"
+echo "Done. Which TEST number stayed smooth?  (1=baseline, 2=8s buffer, 3=8s buffer+slave/resample)"
