@@ -33,9 +33,9 @@ Gst.init(None)
 
 # Streams play with audio sync=false (the live clock is too jittery to sync to),
 # which makes the audio run slightly ahead of the (clock-synced) video. Delay the
-# audio by this much to line them back up. Tunable; raise if audio still leads,
-# lower if it lags.
-STREAM_AV_DELAY_MS = 220
+# audio by this much (ms) to line them back up. Overridden by the
+# stream_av_delay_ms setting; this is just the fallback default.
+STREAM_AV_DELAY_MS = 150
 
 
 class GstPlayer:
@@ -60,6 +60,7 @@ class GstPlayer:
         self._watcher = None
         self._asink = None                   # alsasink element (clock-sync toggle)
         self._adelay = None                  # queue before the sink (A/V delay)
+        self._av_delay_ms = STREAM_AV_DELAY_MS
         self._shot_lock = threading.Lock()   # single-flight HDMI snapshots
 
     # ---- lifecycle --------------------------------------------------------
@@ -67,7 +68,9 @@ class GstPlayer:
         self._stop = False
         self._blank_console()
         try:
-            self.set_audio_device(config.load()["settings"].get("audio_out"))
+            cfg = config.load()["settings"]
+            self.set_audio_device(cfg.get("audio_out"))
+            self.set_av_delay(cfg.get("stream_av_delay_ms"))
         except Exception:
             pass
         self._build_playbin()
@@ -179,7 +182,7 @@ class GstPlayer:
             # delay audio to match video only for streams (sync=false); 0 for
             # files, where sync=true keeps A/V aligned on its own
             self._adelay.set_property(
-                "min-threshold-time", STREAM_AV_DELAY_MS * Gst.MSECOND if is_url else 0)
+                "min-threshold-time", self._av_delay_ms * Gst.MSECOND if is_url else 0)
         pb.set_state(Gst.State.READY)            # flush any previous stream
         pb.set_property("uri", src if is_url else Gst.filename_to_uri(src))
         pb.set_state(Gst.State.PAUSED)
@@ -317,6 +320,18 @@ class GstPlayer:
         else:
             self._audio_device = name
         self.log("audio device set to %s" % (self._audio_device or "default"))
+
+    def set_av_delay(self, ms):
+        """Set the live-stream audio delay (ms) used to match A/V under
+        sync=false. Applies live if a stream is currently playing."""
+        try:
+            ms = max(0, min(2000, int(ms)))
+        except (TypeError, ValueError):
+            return
+        self._av_delay_ms = ms
+        if self._cur_kind == "stream" and self._adelay is not None:
+            self._adelay.set_property("min-threshold-time", ms * Gst.MSECOND)
+        self.log("stream A/V delay set to %d ms" % ms)
 
     # DRM/raw fourcc -> GStreamer raw format, for packed 4:2:0 frames we can
     # re-wrap and JPEG-encode cheaply

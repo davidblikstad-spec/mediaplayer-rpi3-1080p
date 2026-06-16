@@ -318,10 +318,12 @@ def create_app():
 
         def m(c):
             for k in ("cec_device", "cec_phys_addr", "default_item",
-                      "audio_out", "screenshot_interval"):
+                      "audio_out", "screenshot_interval", "stream_av_delay_ms"):
                 if k in body:
                     c["settings"][k] = body[k]
         config.update(m)
+        if "stream_av_delay_ms" in body:
+            gstmod.player.set_av_delay(body["stream_av_delay_ms"])
         # changing the audio output device means rebuilding the pipeline with a
         # new sink, then resuming whatever was playing
         if "audio_out" in body:

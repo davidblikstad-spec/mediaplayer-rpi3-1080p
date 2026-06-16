@@ -33,6 +33,7 @@ def _defaults():
             "default_item": None,          # an item dict (see playlists) or None
             "audio_out": "auto",           # ALSA device: "auto", HDMI or analog
             "screenshot_interval": 5,      # seconds between HDMI snapshots
+            "stream_av_delay_ms": 150,     # delay live-stream audio to match video
         },
         "playlists": [],
         "schedules": [],
