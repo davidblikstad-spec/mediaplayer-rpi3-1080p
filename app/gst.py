@@ -52,6 +52,7 @@ class GstPlayer:
         self._paused = False
         self._stop = False
         self._watcher = None
+        self._asink = None                   # alsasink element (clock-sync toggle)
         self._shot_lock = threading.Lock()   # single-flight HDMI snapshots
 
     # ---- lifecycle --------------------------------------------------------
@@ -96,31 +97,18 @@ class GstPlayer:
         self.playbin = pb
 
     def _make_audio_sink(self):
-        """Build an explicit alsasink (default device, or the selected one).
-
-        We use alsasink rather than autoaudiosink so we can raise
-        alignment-threshold: live HLS (NRK) introduces a small timestamp
-        discontinuity at every ~3 s segment boundary, and the sink's default
-        40 ms threshold makes it resync there — an audible audio drop every
-        segment. A large threshold treats those as continuous, so audio plays
-        smoothly. Falls back to playbin's default sink if alsasink is absent."""
+        """Build an explicit alsasink (default device, or the selected one) and
+        keep a reference so load() can toggle clock-sync per item. Falls back to
+        playbin's default sink if alsasink is absent."""
         sink = Gst.ElementFactory.make("alsasink", None)
         if sink is None:
             self.log("alsasink unavailable (install gstreamer1.0-alsa); "
                      "using default audio output")
+            self._asink = None
             return None
         if self._audio_device:
             sink.set_property("device", self._audio_device)
-        sink.set_property("alignment-threshold", 1 * Gst.SECOND)
-        # Live streams run off the system clock, so the sink must slave its HDMI
-        # hardware clock to it. The default "skew" method corrects drift by
-        # jumping the audio pointer — an audible drop every few seconds. Use
-        # "resample" so drift is corrected smoothly. (No effect on local files,
-        # where alsasink is itself the clock master.)
-        try:
-            sink.set_property("slave-method", "resample")
-        except Exception:
-            pass
+        self._asink = sink
         return sink
 
     def restart(self):
@@ -162,15 +150,15 @@ class GstPlayer:
         pb = self.playbin
         if pb is None:
             return
+        # A live stream's clock is too jittery to sync the audio sink to (the
+        # decoded audio is fine and buffered, but clock-synced rendering stalls
+        # then bursts -> audible drops every few seconds). So for streams we let
+        # the audio device pace itself (sync=false). Local files keep sync=true
+        # for proper A/V lip-sync.
+        if self._asink is not None:
+            self._asink.set_property("sync", not is_url)
         pb.set_state(Gst.State.READY)            # flush any previous stream
         pb.set_property("uri", src if is_url else Gst.filename_to_uri(src))
-        if is_url:
-            # Live HLS: buffer several seconds so the audio sink doesn't
-            # underrun (drop out ~every segment) while the next segment is being
-            # fetched. buffer-* covers network buffering; the raised pipeline
-            # latency below gives the sinks headroom on a live source.
-            pb.set_property("buffer-duration", 10 * Gst.SECOND)
-            pb.set_property("buffer-size", 16 * 1024 * 1024)
         pb.set_state(Gst.State.PAUSED)
         pb.get_state((20 if is_url else 5) * Gst.SECOND)   # wait for preroll
         if not is_url and (start > 0 or end is not None):
@@ -179,13 +167,6 @@ class GstPlayer:
             stop_ns = int(float(end) * Gst.SECOND) if end is not None else -1
             pb.seek(1.0, Gst.Format.TIME, flags,
                     Gst.SeekType.SET, int(start * Gst.SECOND), stop_type, stop_ns)
-        # Live streams get a fixed 2 s latency (deeper sink buffer, tolerates
-        # segment-fetch jitter); local files use auto latency so they start
-        # promptly.
-        try:
-            pb.set_latency((2 * Gst.SECOND) if is_url else Gst.CLOCK_TIME_NONE)
-        except Exception:
-            pass
         pb.set_property("volume", self._volume / 100.0)
         self._active_bus = pb.get_bus()
         pb.set_state(Gst.State.PLAYING)
