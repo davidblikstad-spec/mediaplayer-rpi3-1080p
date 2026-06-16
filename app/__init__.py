@@ -399,7 +399,10 @@ def create_app():
     def api_snapshot():
         path = os.path.join(config.PREVIEW_DIR, "live.jpg")
         now = time.time()
-        if now - _snap_last["t"] > 1.5:
+        # refresh at the configured interval (>=2s); the grab itself is
+        # single-flight and runs in the background (see GstPlayer.screenshot)
+        interval = max(2, int(config.load()["settings"].get("screenshot_interval") or 5))
+        if now - _snap_last["t"] > interval:
             _snap_last["t"] = now
             try:
                 gstmod.player.screenshot(path)

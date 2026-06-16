@@ -52,6 +52,7 @@ class GstPlayer:
         self._paused = False
         self._stop = False
         self._watcher = None
+        self._shot_lock = threading.Lock()   # single-flight HDMI snapshots
 
     # ---- lifecycle --------------------------------------------------------
     def start(self):
@@ -304,28 +305,49 @@ class GstPlayer:
         self.log("audio device set to %s" % (self._audio_device or "default"))
 
     def screenshot(self, path):
-        """Grab the current frame to `path` by decoding it from the source file
-        at the live playback position — kmssink can't be read back directly."""
+        """Refresh the live HDMI preview at `path` by decoding one frame from
+        the current source (kmssink can't be read back). Runs in the background
+        and single-flight: a grab from a live HLS URL is expensive (connect +
+        AES-decrypt + decode), so overlapping/back-to-back ffmpegs would pile up
+        and saturate the Pi's CPU — which starves the audio thread and makes the
+        stream's audio drop. We therefore allow only one at a time, cap it to a
+        single ffmpeg thread, and never block the caller."""
+        if not self._shot_lock.acquire(blocking=False):
+            return False                      # one already in flight; skip
         with self._lock:
             src = self._cur_path
             kind = self._cur_kind
         is_url = bool(src) and src.startswith(("http://", "https://"))
         if not src or (not is_url and not os.path.exists(src)):
+            self._shot_lock.release()
             return False
         pos = self.get_time_pos()
         if pos is None:
             pos = self._cur_start
-        cmd = ["ffmpeg", "-y", "-nostdin"]
+        cmd = ["ffmpeg", "-y", "-nostdin", "-threads", "1"]
         # local files: seek to the live position; streams/images: just grab one
         if kind not in ("image", "stream") and not is_url:
             cmd += ["-ss", "%.3f" % max(0.0, pos)]
+        tmp = path + ".tmp.jpg"
         cmd += ["-i", src, "-frames:v", "1", "-q:v", "3",
-                "-vf", "scale=640:-2", path]
-        try:
-            subprocess.run(cmd, capture_output=True, timeout=10)
-        except Exception:
-            return False
-        return os.path.exists(path)
+                "-vf", "scale=640:-2", tmp]
+
+        def run():
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=15)
+                if os.path.exists(tmp):
+                    os.replace(tmp, path)     # atomic; never serve a partial
+            except Exception:
+                pass
+            finally:
+                try:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                except OSError:
+                    pass
+                self._shot_lock.release()
+        threading.Thread(target=run, daemon=True).start()
+        return True
 
     # ---- bus watching -----------------------------------------------------
     def _watch_bus(self):
