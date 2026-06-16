@@ -9,6 +9,9 @@ __pycache__/
 data/config.json
 data/*.tmp
 
+# Disk-backed temp dir for large uploads (see run.py)
+data/tmp/
+
 # User-uploaded media and generated artifacts (recreated at runtime)
 media/
 thumbs/
