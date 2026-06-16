@@ -8,7 +8,7 @@ from flask import (Flask, jsonify, redirect, request, send_file,
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
-from . import cec, config, media, transcode, mpv as mpvmod
+from . import cec, config, media, transcode, gst as gstmod
 from .scheduler import Scheduler
 
 _snap_last = {"t": 0.0}
@@ -47,10 +47,10 @@ def create_app():
 
     # ---- player + scheduler singletons -----------------------------------
     log = lambda m: print("[mediaplayer]", m, flush=True)
-    mpvmod.mpv = mpvmod.MpvIPC(log=log)
-    mpvmod.mpv.start()
-    mpvmod.engine = mpvmod.PlayerEngine(mpvmod.mpv, log=log)
-    app.scheduler = Scheduler(mpvmod.engine, log=log)
+    gstmod.player = gstmod.GstPlayer(log=log)
+    gstmod.player.start()
+    gstmod.engine = gstmod.PlayerEngine(gstmod.player, log=log)
+    app.scheduler = Scheduler(gstmod.engine, log=log)
     app.scheduler.reload()
     # on boot, resume whatever the schedule says should be active now
     # (falls back to the default item if nothing is scheduled)
@@ -59,7 +59,7 @@ def create_app():
     except Exception as e:
         log("boot catch-up failed: %s" % e)
         try:
-            mpvmod.engine.play_default()
+            gstmod.engine.play_default()
         except Exception as e2:
             log("play_default failed: %s" % e2)
 
@@ -112,9 +112,9 @@ def create_app():
     @login_required
     def api_state():
         return jsonify({
-            "player": mpvmod.engine.status(),
+            "player": gstmod.engine.status(),
             "next_runs": app.scheduler.next_runs(),
-            "mpv_alive": bool(mpvmod.mpv.proc and mpvmod.mpv.proc.poll() is None),
+            "mpv_alive": gstmod.player.is_alive(),
         })
 
     @app.route("/api/config")
@@ -284,7 +284,7 @@ def create_app():
         config.update(m)
         # audio-device can be switched live, no player restart needed
         if "audio_out" in body:
-            mpvmod.mpv.set_property("audio-device", body["audio_out"] or "auto")
+            gstmod.player.set_audio_device(body["audio_out"] or "auto")
         return jsonify(_public_config(config.load()))
 
     @app.route("/api/password", methods=["PUT"])
@@ -313,36 +313,36 @@ def create_app():
         pl = config.get_playlist(cfg, pid)
         if not pl:
             return jsonify({"error": "not found"}), 404
-        mpvmod.engine.play_playlist(pl)
+        gstmod.engine.play_playlist(pl)
         return jsonify({"ok": True})
 
     @app.route("/api/stop", methods=["POST"])
     @login_required
     def api_stop():
-        mpvmod.engine.stop()
+        gstmod.engine.stop()
         return jsonify({"ok": True})
 
     @app.route("/api/mpv/restart", methods=["POST"])
     @login_required
     def api_mpv_restart():
-        mpvmod.mpv.restart()
-        mpvmod.engine.reapply()
+        gstmod.player.restart()
+        gstmod.engine.reapply()
         return jsonify({"ok": True})
 
     @app.route("/api/pause", methods=["POST"])
     @login_required
     def api_pause():
-        mpvmod.mpv.command("cycle", "pause")
+        gstmod.player.toggle_pause()
         return jsonify({"ok": True})
 
     @app.route("/api/next", methods=["POST"])
     @login_required
     def api_next():
-        with mpvmod.engine.lock:
-            if mpvmod.engine.items:
-                mpvmod.engine.loops_left = 1
-                mpvmod.engine.index += 1
-                mpvmod.engine._load_current()
+        with gstmod.engine.lock:
+            if gstmod.engine.items:
+                gstmod.engine.loops_left = 1
+                gstmod.engine.index += 1
+                gstmod.engine._load_current()
         return jsonify({"ok": True})
 
     # ================= cec ================================================
@@ -366,7 +366,7 @@ def create_app():
         if now - _snap_last["t"] > 1.5:
             _snap_last["t"] = now
             try:
-                mpvmod.mpv.command("screenshot-to-file", path, "video", timeout=8)
+                gstmod.player.screenshot(path)
             except Exception:
                 pass
         if not os.path.exists(path):
