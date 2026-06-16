@@ -13,19 +13,27 @@ import threading
 from . import media
 
 MAX_W, MAX_H = 1920, 1080
+# Codecs the Pi can hardware-decode smoothly; anything else gets transcoded.
+PLAYABLE_VCODECS = {"h264"}
 
 # job registry, keyed by the uploaded file's media-relative name
 _jobs = {}
 _lock = threading.Lock()
 
 
-def needs_transcode(width, height):
-    return bool(width and height and (width > MAX_W or height > MAX_H))
+def needs_transcode(width, height, codec=None):
+    """A video needs transcoding if it's larger than 1080p OR not in a codec
+    the Pi can hardware-decode (H.264) — independent reasons."""
+    oversize = bool(width and height and (width > MAX_W or height > MAX_H))
+    badcodec = bool(codec) and codec not in PLAYABLE_VCODECS
+    return oversize or badcodec
 
 
 def jobs_snapshot():
+    # private keys (the Popen handle, abort flag) start with "_" and are dropped
     with _lock:
-        return {k: dict(v) for k, v in _jobs.items()}
+        return {k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")}
+                for k, v in _jobs.items()}
 
 
 def _set(rel, **kw):
@@ -86,6 +94,7 @@ def _run(rel, duration, log):
         with open(errf, "wb") as ef:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=ef,
                                     text=True)
+            _set(rel, _proc=proc)
             for line in proc.stdout:
                 line = line.strip()
                 if line.startswith("out_time_us=") and duration:
@@ -96,6 +105,13 @@ def _run(rel, duration, log):
                     except (ValueError, ZeroDivisionError):
                         pass
             proc.wait()
+        with _lock:
+            aborted = bool(_jobs.get(rel, {}).get("_aborted"))
+        if aborted:
+            _set(rel, status="aborted", percent=0, error=None)
+            log("transcode aborted: %s" % rel)
+            _rm(tmp_abs)
+            return
         if proc.returncode != 0:
             tail = _tail(errf)
             _set(rel, status="error",
@@ -121,6 +137,26 @@ def _run(rel, duration, log):
         _rm(tmp_abs)
     finally:
         _rm(errf)
+
+
+def cancel(rel):
+    """Abort a running transcode for `rel`. Returns True if one was running."""
+    with _lock:
+        j = _jobs.get(rel)
+        if not j or j.get("status") != "running":
+            return False
+        j["_aborted"] = True
+        p = j.get("_proc")
+    if p and p.poll() is None:
+        p.terminate()
+        try:
+            p.wait(5)
+        except Exception:  # noqa
+            try:
+                p.kill()
+            except Exception:  # noqa
+                pass
+    return True
 
 
 def _rm(path):

@@ -135,6 +135,11 @@ def create_app():
             it["thumb"] = media.thumbnail(it["file"])
             info = media.probe(it["file"])
             it.update(info)
+            it["needs_transcode"] = (
+                it["type"] == "video"
+                and transcode.needs_transcode(info.get("width"),
+                                              info.get("height"),
+                                              info.get("codec")))
         return jsonify(items)
 
     @app.route("/api/upload", methods=["POST"])
@@ -153,15 +158,41 @@ def create_app():
         if media.media_type(name) == "video":
             info = media.probe(name)
             w, h, dur = info.get("width"), info.get("height"), info.get("duration")
-            if transcode.needs_transcode(w, h):
-                transcode.start(name, w, h, dur or 0, log=log)
-                resp["transcode"] = {"needed": True, "from": "%dx%d" % (w, h)}
+            if transcode.needs_transcode(w, h, info.get("codec")):
+                transcode.start(name, w or 0, h or 0, dur or 0, log=log)
+                frm = "%dx%d" % (w, h) if w and h else (info.get("codec") or "?")
+                resp["transcode"] = {"needed": True, "from": frm}
         return jsonify(resp)
 
     @app.route("/api/transcode")
     @login_required
     def api_transcode():
         return jsonify(transcode.jobs_snapshot())
+
+    @app.route("/api/transcode/start", methods=["POST"])
+    @login_required
+    def api_transcode_start():
+        body = request.get_json(force=True)
+        rel = body.get("file")
+        if not rel:
+            return jsonify({"error": "no file"}), 400
+        try:
+            ap = media.abs_path(rel)
+        except ValueError:
+            return jsonify({"error": "bad path"}), 400
+        if not os.path.exists(ap):
+            return jsonify({"error": "not found"}), 404
+        if media.media_type(rel) != "video":
+            return jsonify({"error": "not a video"}), 400
+        info = media.probe(rel)
+        transcode.start(rel, info.get("width") or 0, info.get("height") or 0,
+                        info.get("duration") or 0, log=log)
+        return jsonify({"ok": True})
+
+    @app.route("/api/transcode/<path:rel>", methods=["DELETE"])
+    @login_required
+    def api_transcode_abort(rel):
+        return jsonify({"ok": transcode.cancel(rel)})
 
     @app.route("/api/media/<path:rel>", methods=["DELETE"])
     @login_required

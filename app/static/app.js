@@ -280,23 +280,46 @@ $("#sch-new").onclick = async () => {
 /* ---------- MEDIA ---------- */
 function renderMediaGrid() {
   const g = $("#media-grid"); g.innerHTML = "";
-  if (!mediaList.length) g.innerHTML = '<p class="muted">No media uploaded yet.</p>';
+  if (!mediaList.length) { g.innerHTML = '<p class="muted">No media uploaded yet.</p>'; return; }
   mediaList.forEach(m => {
-    const c = document.createElement("div"); c.className = "media-card";
+    const job = transcodeJobs[m.file];
+    const transcoding = job && job.status === "running";
+    const c = document.createElement("div");
+    c.className = "media-card" + (m.needs_transcode ? " unavailable" : "");
     const thumb = m.thumb ? `<img src="/thumb/${encodeURIComponent(m.thumb)}">` : `<span class="muted">${m.type}</span>`;
     const dur = m.duration ? " · " + Math.round(m.duration) + "s" : "";
+    const res = (m.width && m.height) ? " · " + m.width + "×" + m.height : "";
+    let badge = "";
+    if (transcoding) badge = `<div class="badge warn">Transcoding ${job.percent || 0}%</div>`;
+    else if (m.needs_transcode) badge = `<div class="badge warn">Not playable — needs 1080p / H.264</div>`;
+    let actions = `<button class="small prev">Preview</button>`;
+    if (transcoding) actions += `<button class="small danger abort">Abort</button>`;
+    else if (m.needs_transcode) actions += `<button class="small primary transcode">Transcode</button>`;
+    actions += `<button class="small danger del">Delete</button>`;
     c.innerHTML = `
-      <div class="thumb">${thumb}</div>
-      <div class="meta"><div class="name">${esc(m.file)}</div><div class="muted">${m.type}${dur} · ${(m.size / 1048576).toFixed(1)} MB</div></div>
-      <div class="actions"><button class="small prev">Preview</button><button class="small danger del">Delete</button></div>`;
+      <div class="thumb">${thumb}${badge}</div>
+      <div class="meta"><div class="name">${esc(m.file)}</div><div class="muted">${m.type}${res}${dur} · ${(m.size / 1048576).toFixed(1)} MB</div></div>
+      <div class="actions">${actions}</div>`;
     c.querySelector(".thumb").onclick = () => previewMedia(m.file, m.type);
     c.querySelector(".prev").onclick = () => previewMedia(m.file, m.type);
     c.querySelector(".del").onclick = async () => {
       if (!confirm("Delete " + m.file + "?")) return;
       await api("DELETE", "/api/media/" + encodeURIComponent(m.file)); loadMedia();
     };
+    const tc = c.querySelector(".transcode");
+    if (tc) tc.onclick = async () => {
+      await api("POST", "/api/transcode/start", { file: m.file });
+      toast("Transcoding " + m.file + "…"); ensureTranscodePolling(); loadMedia();
+    };
+    const ab = c.querySelector(".abort");
+    if (ab) ab.onclick = () => abortTranscode(m.file);
     g.appendChild(c);
   });
+}
+async function abortTranscode(file) {
+  if (!confirm("Abort transcoding " + file + "?")) return;
+  await api("DELETE", "/api/transcode/" + encodeURIComponent(file));
+  toast("Aborting " + file + "…");
 }
 async function uploadOne(f) {
   const fd = new FormData(); fd.append("file", f);
@@ -349,23 +372,27 @@ $("#upload-input").onchange = async (e) => {
 
 /* ---------- transcode progress ---------- */
 let transcodePollTimer = null;
+let transcodeJobs = {};      // latest /api/transcode snapshot (for card badges)
 const transcodeSeen = {};   // file -> true once its done/error was reported
 function ensureTranscodePolling() { if (!transcodePollTimer) pollTranscodes(); }
 async function pollTranscodes() {
   transcodePollTimer = null;
   let jobs = await api("GET", "/api/transcode") || {};
+  transcodeJobs = jobs;
   renderTranscodes(jobs);
   let active = false;
   Object.keys(jobs).forEach(k => {
     const j = jobs[k];
     if (j.status === "running") active = true;
-    if ((j.status === "done" || j.status === "error") && !transcodeSeen[k]) {
+    if (["done", "error", "aborted"].includes(j.status) && !transcodeSeen[k]) {
       transcodeSeen[k] = true;
-      if (j.status === "done") { toast("Transcoded to 1080p: " + (j.result || j.file)); loadMedia(); }
-      else { toast("Transcode failed: " + j.file); }
+      if (j.status === "done") toast("Transcoded to 1080p: " + (j.result || j.file));
+      else if (j.status === "aborted") toast("Transcode aborted: " + j.file);
+      else toast("Transcode failed: " + j.file);
+      loadMedia();
     }
   });
-  if (active) transcodePollTimer = setTimeout(pollTranscodes, 2000);
+  if (active) { renderMediaGrid(); transcodePollTimer = setTimeout(pollTranscodes, 2000); }
 }
 function renderTranscodes(jobs) {
   const wrap = $("#transcode-list"); if (!wrap) return;
@@ -383,6 +410,13 @@ function renderTranscodes(jobs) {
       (j.status === "error"
         ? `<div class="muted">${esc(j.error || "ffmpeg error")}</div>`
         : `<div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>`);
+    if (j.status === "running") {
+      const ab = document.createElement("button");
+      ab.className = "small danger"; ab.textContent = "Abort";
+      ab.style.marginTop = ".4rem";
+      ab.onclick = () => abortTranscode(j.file);
+      div.appendChild(ab);
+    }
     wrap.appendChild(div);
   });
 }
@@ -400,6 +434,7 @@ function renderSettings() {
 function renderDefaultSelect() {
   const sel = $("#set-default"); sel.innerHTML = '<option value="">— none (black screen) —</option>';
   mediaList.forEach(m => {
+    if (m.needs_transcode) return;   // not playable until transcoded
     const o = document.createElement("option"); o.value = m.file; o.textContent = m.file + " (" + m.type + ")";
     sel.appendChild(o);
   });
@@ -453,9 +488,11 @@ async function openPicker(onPick) {
   wrap.innerHTML = `<h3>Choose a file</h3><div class="picker-list"></div>`;
   const list = wrap.querySelector(".picker-list");
   mediaList.forEach(m => {
-    const c = document.createElement("div"); c.className = "media-card";
-    c.innerHTML = `<div class="thumb">${m.thumb ? `<img src="/thumb/${encodeURIComponent(m.thumb)}">` : `<span class="muted">${m.type}</span>`}</div><div class="meta"><div class="name">${esc(m.file)}</div></div>`;
-    c.onclick = () => onPick(m);
+    const c = document.createElement("div");
+    c.className = "media-card" + (m.needs_transcode ? " unavailable disabled" : "");
+    const badge = m.needs_transcode ? `<div class="badge warn">needs transcode</div>` : "";
+    c.innerHTML = `<div class="thumb">${m.thumb ? `<img src="/thumb/${encodeURIComponent(m.thumb)}">` : `<span class="muted">${m.type}</span>`}${badge}</div><div class="meta"><div class="name">${esc(m.file)}</div></div>`;
+    if (!m.needs_transcode) c.onclick = () => onPick(m);
     list.appendChild(c);
   });
   openModal(wrap);
