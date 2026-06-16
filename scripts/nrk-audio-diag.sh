@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Find an HDMI ALSA device string that plays NRK live audio cleanly. Plays NRK1
-# audio through several candidate devices in turn (video -> fakesink, so no
-# DRM/console needed); LISTEN and note which segment(s) are smooth vs dropping.
-# Stops the mediaplayer service to free the audio device and ALWAYS restarts it.
+# Diagnose NRK live-audio dropouts. Plays NRK1 audio (video -> fakesink, no DRM
+# needed) through candidate alsasink configs in turn; LISTEN and note which stay
+# smooth past the first few seconds. Stops the mediaplayer service to free the
+# audio device and ALWAYS restarts it. Run with sudo.
 #
-# Usage: sudo scripts/nrk-audio-diag.sh [DEVICE]
-#   no arg  -> cycle through candidate devices (~9s each)
-#   DEVICE  -> test just that one (e.g. "plughw:CARD=vc4hdmi,DEV=0")
+# Theory: on a live stream alsasink is the clock master ("we are not slaved"),
+# so it plays at the HDMI hardware rate while the stream arrives at its own rate
+# -> the buffer drains and underruns every few seconds. Forcing the sink to
+# slave (provide-clock=false) and resample should track the stream and stay
+# smooth.
+#
+# Usage: sudo scripts/nrk-audio-diag.sh ["alsasink ...full sink desc..."] [SECONDS]
 set -u
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo"; exit 1; }
 trap 'echo; echo "restarting mediaplayer..."; systemctl start mediaplayer' EXIT
@@ -20,35 +24,31 @@ PY
 )
 [ -n "${URL:-}" ] || { echo "could not resolve NRK url"; exit 1; }
 
-DUR="${2:-25}"          # seconds per device (the drop only shows after ~5s)
+DEV="plughw:CARD=vc4hdmi,DEV=0"
+DUR="${2:-30}"
 if [ $# -ge 1 ]; then
-  DEVICES=("$1")
+  SINKS=("$1")
 else
-  DEVICES=(
-    "plughw:CARD=vc4hdmi,DEV=0"
-    "hdmi:CARD=vc4hdmi,DEV=0"
-    "default:CARD=vc4hdmi"
-    "sysdefault:CARD=vc4hdmi"
+  SINKS=(
+    "alsasink device=$DEV"
+    "alsasink device=$DEV provide-clock=false slave-method=resample"
+    "alsasink device=$DEV provide-clock=false slave-method=skew"
   )
 fi
 
 i=0
-for DEV in "${DEVICES[@]}"; do
+for SINK in "${SINKS[@]}"; do
   i=$((i+1))
   echo
   echo "############################################################"
-  echo "### TEST $i/${#DEVICES[@]}: $DEV"
-  echo "### LISTEN NOW for ~${DUR}s — smooth, or does it start dropping?"
+  echo "### TEST $i/${#SINKS[@]}: $SINK"
+  echo "### LISTEN ~${DUR}s — smooth, or starts dropping after a few s?"
   echo "############################################################"
   GST_DEBUG=1 timeout -k3 "$DUR" gst-launch-1.0 -q playbin3 uri="$URL" flags=0x13 \
-    video-sink=fakesink audio-sink="alsasink device=$DEV" >/tmp/nrk-dev.log 2>&1
-  if grep -qiE "Unknown PCM|No such device|could not open|cannot find card" /tmp/nrk-dev.log; then
-    echo ">>> $DEV : FAILED TO OPEN CLEANLY (see error)"
-    grep -iE "Unknown PCM|No such|could not open|cannot find" /tmp/nrk-dev.log | head -2
-  else
-    echo ">>> $DEV : opened ok"
-  fi
+    video-sink=fakesink audio-sink="$SINK" >/tmp/nrk-dev.log 2>&1
+  grep -qiE "Unknown PCM|No such device|could not open|cannot find card" /tmp/nrk-dev.log \
+    && { echo ">>> failed to open:"; grep -iE "Unknown PCM|No such|could not open|cannot find" /tmp/nrk-dev.log | head -1; }
   sleep 1
 done
 echo
-echo "Done. Tell me which TEST number(s) sounded smooth."
+echo "Done. Which TEST number stayed smooth?  (1=baseline, 2=slave+resample, 3=slave+skew)"
