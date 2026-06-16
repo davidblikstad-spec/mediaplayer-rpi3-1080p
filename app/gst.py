@@ -148,14 +148,28 @@ class GstPlayer:
             return
         pb.set_state(Gst.State.READY)            # flush any previous stream
         pb.set_property("uri", src if is_url else Gst.filename_to_uri(src))
+        if is_url:
+            # Live HLS: buffer several seconds so the audio sink doesn't
+            # underrun (drop out ~every segment) while the next segment is being
+            # fetched. buffer-* covers network buffering; the raised pipeline
+            # latency below gives the sinks headroom on a live source.
+            pb.set_property("buffer-duration", 10 * Gst.SECOND)
+            pb.set_property("buffer-size", 16 * 1024 * 1024)
         pb.set_state(Gst.State.PAUSED)
-        pb.get_state((15 if is_url else 5) * Gst.SECOND)   # wait for preroll
+        pb.get_state((20 if is_url else 5) * Gst.SECOND)   # wait for preroll
         if not is_url and (start > 0 or end is not None):
             flags = Gst.SeekFlags.FLUSH | Gst.SeekFlags.ACCURATE
             stop_type = Gst.SeekType.SET if end is not None else Gst.SeekType.NONE
             stop_ns = int(float(end) * Gst.SECOND) if end is not None else -1
             pb.seek(1.0, Gst.Format.TIME, flags,
                     Gst.SeekType.SET, int(start * Gst.SECOND), stop_type, stop_ns)
+        # Live streams get a fixed 2 s latency (deeper sink buffer, tolerates
+        # segment-fetch jitter); local files use auto latency so they start
+        # promptly.
+        try:
+            pb.set_latency((2 * Gst.SECOND) if is_url else Gst.CLOCK_TIME_NONE)
+        except Exception:
+            pass
         pb.set_property("volume", self._volume / 100.0)
         self._active_bus = pb.get_bus()
         pb.set_state(Gst.State.PLAYING)
