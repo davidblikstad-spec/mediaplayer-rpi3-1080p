@@ -11,13 +11,17 @@ from . import config, media
 
 SOCKET_PATH = "/tmp/mediaplayer-mpv.sock"
 
-# Hardware decode on the Pi uses the V4L2 mem2mem codec block (/dev/video10).
-# We engage it via mpv's --hwdec=v4l2m2m-copy, set at startup. The "-copy" mode
-# pulls decoded frames into system memory so it works with any video output
-# (drm/gpu); forcing the decoder per-file with --vd=h264_v4l2m2m instead falls
-# back to software whenever a real display VO is active. mpv auto-selects the
-# right underlying decoder per codec, so no per-codec table is needed.
-HWDEC = "v4l2m2m-copy"
+# Hardware decode on the Pi uses the V4L2 mem2mem codec block (/dev/video10),
+# engaged via mpv's --hwdec (set at startup; mpv auto-selects the right decoder
+# per codec). The mode must match the video output:
+#   vo=drm : "v4l2m2m" (non-copy) — decoded frames stay as DRM-prime buffers and
+#            are shown directly on a hardware plane (zero-copy, no CPU work).
+#   vo=gpu : "v4l2m2m-copy" — frames are pulled into system memory for the GL VO.
+# Using the copy mode with vo=drm forces a CPU YUV->RGB conversion per frame,
+# which pins ~2.5 cores on a Pi 3 and plays 1080p at ~0.25x. (Forcing the
+# decoder per-file via --vd= instead silently falls back to software entirely.)
+def _hwdec_for(vo):
+    return "v4l2m2m" if vo == "drm" else "v4l2m2m-copy"
 
 
 class MpvIPC:
@@ -45,7 +49,7 @@ class MpvIPC:
             # GPU output (V3D) scales on the GPU instead of the CPU — essential
             # on a Pi when the panel resolution differs from the video size.
             vo_args = ["--vo=gpu", "--gpu-context=drm"]
-        hwdec = HWDEC if cfg["settings"].get("hw_decode", True) else "no"
+        hwdec = _hwdec_for(vo) if cfg["settings"].get("hw_decode", True) else "no"
         args = [
             "mpv",
             "--idle=yes",
