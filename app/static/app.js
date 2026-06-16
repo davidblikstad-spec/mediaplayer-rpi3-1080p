@@ -321,31 +321,55 @@ async function abortTranscode(file) {
   await api("DELETE", "/api/transcode/" + encodeURIComponent(file));
   toast("Aborting " + file + "…");
 }
-async function uploadOne(f) {
-  const fd = new FormData(); fd.append("file", f);
-  const r = await fetch("/api/upload", { method: "POST", body: fd });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data && data.error ? data.error : "network/size");
-  return data;
+let uploadXhr = null;        // in-flight upload, so Cancel can abort it
+let uploadCancelled = false;
+function setUploadBar(frac) { const b = $("#upload-bar"); if (b) b.style.width = Math.round(frac * 100) + "%"; }
+function showUploadProgress(on) { const p = $("#upload-progress"); if (p) p.classList.toggle("hidden", !on); }
+// XHR (not fetch) so we get upload.onprogress and .abort()
+function uploadOne(f, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    uploadXhr = xhr;
+    xhr.open("POST", "/api/upload");
+    xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      uploadXhr = null;
+      if (xhr.status === 401) { location.href = "/login"; return; }
+      let data = {}; try { data = JSON.parse(xhr.responseText); } catch (e) {}
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(data.error || ("HTTP " + xhr.status)));
+    };
+    xhr.onerror = () => { uploadXhr = null; reject(new Error("network/size")); };
+    xhr.onabort = () => { uploadXhr = null; reject(new DOMException("aborted", "AbortError")); };
+    const fd = new FormData(); fd.append("file", f);
+    xhr.send(fd);
+  });
 }
 async function uploadFiles(fileList) {
   const files = Array.from(fileList || []);
   if (!files.length) return;
+  uploadCancelled = false;
+  showUploadProgress(true);
   let done = 0, transcoding = false;
   for (const f of files) {
-    $("#upload-status").textContent =
-      `Uploading ${f.name}… (${done + 1}/${files.length})`;
+    if (uploadCancelled) break;
+    $("#upload-status").textContent = `Uploading ${f.name}… (${done + 1}/${files.length})`;
+    setUploadBar(0);
     try {
-      const data = await uploadOne(f);
+      const data = await uploadOne(f, setUploadBar);
       if (data.transcode && data.transcode.needed) transcoding = true;
     } catch (e) {
-      $("#upload-status").textContent = `Upload failed for ${f.name}: ${e.message}`;
+      showUploadProgress(false);
+      $("#upload-status").textContent = e.name === "AbortError"
+        ? `Upload cancelled${done ? ` — ${done} added` : ""}.`
+        : `Upload failed for ${f.name}: ${e.message}`;
       loadMedia();
       return;
     }
     done++;
     loadMedia();
   }
+  showUploadProgress(false);
   if (transcoding) {
     $("#upload-status").textContent =
       `Added ${done} file${done > 1 ? "s" : ""}. Any larger than 1080p are auto-transcoding to 1080p (can take a few minutes on the Pi).`;
@@ -359,6 +383,7 @@ $("#upload-input").onchange = async (e) => {
   await uploadFiles(e.target.files);
   e.target.value = "";   // allow re-selecting the same file
 };
+{ const uc = $("#upload-cancel"); if (uc) uc.onclick = () => { uploadCancelled = true; if (uploadXhr) uploadXhr.abort(); }; }
 (() => {
   const dz = $("#dropzone");
   if (!dz) return;

@@ -44,6 +44,9 @@ label{font-size:.85rem;color:var(--muted)}
 .toolbar{display:flex;gap:.5rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap}
 .dropzone{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem;padding:.8rem 1rem;border:1.5px dashed var(--line);border-radius:9px;transition:border-color .15s,background .15s}
 .dropzone.dragover{border-color:var(--accent);background:rgba(79,140,255,.08)}
+.upload-progress{display:flex;align-items:center;gap:.6rem;margin-bottom:1rem}
+.upload-progress.hidden{display:none}
+.upload-progress .progress-track{flex:1}
 .spacer{flex:1}
 .controls{display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0}
 .chips{display:flex;gap:.4rem;flex-wrap:wrap}
