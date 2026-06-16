@@ -50,7 +50,7 @@ async function pollState() {
     <div><b>Playlist</b> ${p.playlist_name ? esc(p.playlist_name) : "–"} ${p.count ? `(${p.index + 1}/${p.count})` : ""}</div>
     <div><b>Position</b> ${fmt(p.time_pos)} / ${fmt(p.duration)}</div>
     <div><b>Volume</b> ${p.volume != null ? Math.round(p.volume) : "–"}</div>
-    <div><b>State</b> ${p.paused ? "paused" : (p.current ? "playing" : "idle")} · mpv ${s.mpv_alive ? "ok" : "down"}</div>`;
+    <div><b>State</b> ${p.paused ? "paused" : (p.current ? "playing" : "idle")} · player ${s.player_alive ? "ok" : "down"}</div>`;
 }
 function renderQuickplay() {
   $("#quickplay").innerHTML = "";
@@ -372,10 +372,7 @@ function renderSettings() {
   $("#set-cec-dev").value = s.cec_device || "/dev/cec0";
   $("#set-cec-phys").value = s.cec_phys_addr || "";
   $("#set-snap").value = s.screenshot_interval || 5;
-  $("#set-mpv").value = s.mpv_extra_args || "";
-  $("#set-hw").checked = s.hw_decode !== false;
-  $("#set-vo").value = s.video_out || "gpu";
-  $("#set-ao").value = s.audio_out || "auto";
+  $("#set-ao").value = (s.audio_out || "auto").replace(/^alsa\//, "");
   $("#pw-user").value = (cfg.auth && cfg.auth.username) || "";
   if (s.default_item) $("#set-default-dur").value = s.default_item.duration || 10;
 }
@@ -399,19 +396,10 @@ $("#set-save").onclick = async () => {
     cec_device: $("#set-cec-dev").value,
     cec_phys_addr: $("#set-cec-phys").value,
     screenshot_interval: parseInt($("#set-snap").value) || 5,
-    mpv_extra_args: $("#set-mpv").value,
-    hw_decode: $("#set-hw").checked,
-    video_out: $("#set-vo").value,
     audio_out: $("#set-ao").value,
     default_item: def,
   });
   toast("Settings saved");
-};
-$("#mpv-restart").onclick = async () => {
-  $("#mpv-restart-status").textContent = "Saving + restarting player…";
-  await api("PUT", "/api/settings", { video_out: $("#set-vo").value, hw_decode: $("#set-hw").checked });
-  await api("POST", "/api/mpv/restart");
-  $("#mpv-restart-status").textContent = "Player restarted with " + $("#set-vo").value.toUpperCase() + " output.";
 };
 $("#cec-detect").onclick = async () => {
   $("#cec-info").textContent = "Scanning…";

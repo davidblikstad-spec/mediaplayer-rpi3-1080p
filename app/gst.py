@@ -48,6 +48,7 @@ class GstPlayer:
         self._cur_start = 0.0             # trim-in offset, for screenshots
         self._cur_kind = None
         self._volume = 100                # last requested volume (0..100)
+        self._audio_device = None         # ALSA device, or None = playbin default
         self._paused = False
         self._stop = False
         self._watcher = None
@@ -55,6 +56,10 @@ class GstPlayer:
     # ---- lifecycle --------------------------------------------------------
     def start(self):
         self._stop = False
+        try:
+            self.set_audio_device(config.load()["settings"].get("audio_out"))
+        except Exception:
+            pass
         self._build_playbin()
         self._watcher = threading.Thread(target=self._watch_bus, daemon=True)
         self._watcher.start()
@@ -67,8 +72,24 @@ class GstPlayer:
         vsink = Gst.ElementFactory.make("kmssink", "vsink")
         if vsink is not None:
             pb.set_property("video-sink", vsink)
-        # no on-screen subtitles/visualisations
+        asink = self._make_audio_sink()
+        if asink is not None:
+            pb.set_property("audio-sink", asink)
         self.playbin = pb
+
+    def _make_audio_sink(self):
+        """Audio sink for the selected ALSA device, or None to let playbin use
+        its default (autoaudiosink → system default output)."""
+        dev = self._audio_device
+        if not dev:
+            return None
+        sink = Gst.ElementFactory.make("alsasink", None)
+        if sink is None:
+            self.log("alsasink unavailable (install gstreamer1.0-alsa); "
+                     "using default audio output")
+            return None
+        sink.set_property("device", dev)
+        return sink
 
     def restart(self):
         """Tear down and rebuild the pipelines (e.g. after a wedged sink)."""
@@ -231,10 +252,15 @@ class GstPlayer:
         return val / Gst.SECOND
 
     def set_audio_device(self, name):
-        # playbin uses autoaudiosink (system default → HDMI). Per-device
-        # selection isn't wired to GStreamer yet; kept as a no-op so callers
-        # don't break. TODO: build a device-specific audio sink.
-        self.log("audio-device '%s' requested (using system default)" % name)
+        """Select the ALSA output device. 'auto'/blank → playbin default.
+        Stored now; takes effect on the next pipeline (re)build (see restart)."""
+        if not name or name == "auto":
+            self._audio_device = None
+        elif name.startswith("alsa/"):     # tolerate legacy mpv-style values
+            self._audio_device = name[len("alsa/"):]
+        else:
+            self._audio_device = name
+        self.log("audio device set to %s" % (self._audio_device or "default"))
 
     def screenshot(self, path):
         """Grab the current frame to `path` by decoding it from the source file

@@ -31,10 +31,7 @@ def _defaults():
             "cec_device": "/dev/cec0",
             "cec_phys_addr": "",          # e.g. 0x1000; blank = auto/skip
             "default_item": None,          # an item dict (see playlists) or None
-            "mpv_extra_args": "",
-            "video_out": "gpu",            # "gpu" (GPU-scaled, recommended) or "drm"
-            "audio_out": "auto",           # mpv --audio-device; "auto", HDMI or analog
-            "hw_decode": True,             # use Pi V4L2 hardware video decoder
+            "audio_out": "auto",           # ALSA device: "auto", HDMI or analog
             "screenshot_interval": 5,      # seconds between HDMI snapshots
         },
         "playlists": [],

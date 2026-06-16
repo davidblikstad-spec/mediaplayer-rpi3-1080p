@@ -114,7 +114,7 @@ def create_app():
         return jsonify({
             "player": gstmod.engine.status(),
             "next_runs": app.scheduler.next_runs(),
-            "mpv_alive": gstmod.player.is_alive(),
+            "player_alive": gstmod.player.is_alive(),
         })
 
     @app.route("/api/config")
@@ -277,14 +277,16 @@ def create_app():
 
         def m(c):
             for k in ("cec_device", "cec_phys_addr", "default_item",
-                      "mpv_extra_args", "video_out", "hw_decode", "audio_out",
-                      "screenshot_interval"):
+                      "audio_out", "screenshot_interval"):
                 if k in body:
                     c["settings"][k] = body[k]
         config.update(m)
-        # audio-device can be switched live, no player restart needed
+        # changing the audio output device means rebuilding the pipeline with a
+        # new sink, then resuming whatever was playing
         if "audio_out" in body:
             gstmod.player.set_audio_device(body["audio_out"] or "auto")
+            gstmod.player.restart()
+            gstmod.engine.reapply()
         return jsonify(_public_config(config.load()))
 
     @app.route("/api/password", methods=["PUT"])
@@ -320,13 +322,6 @@ def create_app():
     @login_required
     def api_stop():
         gstmod.engine.stop()
-        return jsonify({"ok": True})
-
-    @app.route("/api/mpv/restart", methods=["POST"])
-    @login_required
-    def api_mpv_restart():
-        gstmod.player.restart()
-        gstmod.engine.reapply()
         return jsonify({"ok": True})
 
     @app.route("/api/pause", methods=["POST"])

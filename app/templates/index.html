@@ -114,31 +114,17 @@
       <div class="card">
         <h2>Playback</h2>
         <div class="row">
-          <label>Video output
-            <select id="set-vo">
-              <option value="gpu">GPU (V3D) — scales on GPU, recommended</option>
-              <option value="drm">DRM — direct, CPU scaling (slow if upscaling)</option>
-            </select>
-          </label>
-          <label class="inline"><input type="checkbox" id="set-hw" checked> Hardware video decoding (Pi V4L2) — keep on</label>
-        </div>
-        <div class="row">
           <label>Audio output
             <select id="set-ao">
-              <option value="auto">Auto (mpv default)</option>
-              <option value="alsa/sysdefault:CARD=vc4hdmi">HDMI</option>
-              <option value="alsa/sysdefault:CARD=Headphones">Analog (3.5mm minijack)</option>
+              <option value="auto">Auto (system default)</option>
+              <option value="sysdefault:CARD=vc4hdmi">HDMI</option>
+              <option value="sysdefault:CARD=Headphones">Analog (3.5mm minijack)</option>
             </select>
           </label>
-          <span class="muted">Applied immediately on Save — no restart needed.</span>
-        </div>
-        <div class="row">
-          <button id="mpv-restart" class="primary">Apply video output (restart player)</button>
-          <span id="mpv-restart-status" class="muted"></span>
+          <span class="muted">Applied on Save (briefly reloads the current item).</span>
         </div>
         <div class="row">
           <label>HDMI snapshot interval (s)<input id="set-snap" type="number" min="1" value="5"></label>
-          <label>Extra mpv args<input id="set-mpv" placeholder="--audio-device=..."></label>
         </div>
         <button id="set-save" class="primary">Save settings</button>
       </div>
