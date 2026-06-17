@@ -1,6 +1,8 @@
 """Flask application: auth, web UI, REST API, and wiring of player/scheduler."""
 import functools
 import os
+import socket
+import threading
 import time
 
 from flask import (Flask, jsonify, redirect, request, send_file,
@@ -12,6 +14,23 @@ from . import cec, config, media, transcode, nrk, gst as gstmod
 from .scheduler import Scheduler
 
 _snap_last = {"t": 0.0}
+
+BOOT_SPLASH_SECONDS = 30
+
+
+def _primary_ip():
+    """Best-effort primary LAN IP of this host."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))      # no traffic; just picks the route's src IP
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return "this-pi"
 
 
 def _public_config(cfg):
@@ -56,16 +75,30 @@ def create_app():
     gstmod.engine = gstmod.PlayerEngine(gstmod.player, log=log)
     app.scheduler = Scheduler(gstmod.engine, log=log)
     app.scheduler.reload()
-    # on boot, resume whatever the schedule says should be active now
-    # (falls back to the default item if nothing is scheduled)
-    try:
-        app.scheduler.catch_up()
-    except Exception as e:
-        log("boot catch-up failed: %s" % e)
+
+    # resume whatever the schedule says should be active now (falls back to the
+    # default item if nothing is scheduled)
+    def _boot_resume():
         try:
-            gstmod.engine.play_default()
-        except Exception as e2:
-            log("play_default failed: %s" % e2)
+            app.scheduler.catch_up()
+        except Exception as e:
+            log("boot catch-up failed: %s" % e)
+            try:
+                gstmod.engine.play_default()
+            except Exception as e2:
+                log("play_default failed: %s" % e2)
+
+    # On boot, show the web-interface URL on screen for a while, then resume.
+    try:
+        url = "http://%s:%s" % (_primary_ip(), cfg["settings"].get("port", 8080))
+        gstmod.player.splash("Media Player\n\nOpen in a browser:\n%s" % url)
+        log("boot splash: %s" % url)
+        t = threading.Timer(BOOT_SPLASH_SECONDS, _boot_resume)
+        t.daemon = True
+        t.start()
+    except Exception as e:
+        log("boot splash failed: %s" % e)
+        _boot_resume()
 
     # ================= auth / pages =======================================
     @app.route("/setup", methods=["GET", "POST"])

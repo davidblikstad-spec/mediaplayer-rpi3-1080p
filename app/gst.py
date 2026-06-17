@@ -149,6 +149,30 @@ class GstPlayer:
     def is_alive(self):
         return self.playbin is not None
 
+    def splash(self, text):
+        """Show `text` (white on black) on the HDMI output until the next load()
+        — used at boot to display the web-interface URL. Holds the DRM plane via
+        its own pipeline (stored as imgpipe, so the next load() tears it down)."""
+        with self._lock:
+            self._cancel_image_timer()
+            self._stop_video()
+            self._stop_image()
+            self._cur_kind = "splash"
+            self._cur_path = None
+            try:
+                pipe = Gst.parse_launch(
+                    "videotestsrc pattern=black is-live=true ! "
+                    "video/x-raw,width=1280,height=720,framerate=10/1 ! "
+                    "textoverlay name=t valignment=center halignment=center "
+                    'line-alignment=center font-desc="Sans, 40" ! kmssink')
+            except Exception as e:  # noqa
+                self.log("splash pipeline failed: %s" % e)
+                return
+            pipe.get_by_name("t").set_property("text", text)
+            self.imgpipe = pipe
+            self._active_bus = pipe.get_bus()
+            pipe.set_state(Gst.State.PLAYING)
+
     # ---- loading / playback ----------------------------------------------
     def load(self, src, *, kind, start=0.0, end=None, hold=None):
         """Show `src`. kind: 'image' freezes a frame for `hold` seconds;
