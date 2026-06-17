@@ -91,7 +91,7 @@ def create_app():
     # On boot, show the web-interface URL on screen for a while, then resume.
     try:
         url = "http://%s:%s" % (_primary_ip(), cfg["settings"].get("port", 8080))
-        gstmod.player.splash("Media Player\n\nOpen in a browser:\n%s" % url)
+        gstmod.player.splash("The Event AS - Media scheduler\n\nOpen in a browser:\n%s" % url)
         log("boot splash: %s" % url)
         t = threading.Timer(BOOT_SPLASH_SECONDS, _boot_resume)
         t.daemon = True
