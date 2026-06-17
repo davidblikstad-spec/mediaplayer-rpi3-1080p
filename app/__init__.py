@@ -15,7 +15,7 @@ from .scheduler import Scheduler
 
 _snap_last = {"t": 0.0}
 
-BOOT_SPLASH_SECONDS = 30
+BOOT_SPLASH_SECONDS = 5
 
 
 def _primary_ip():

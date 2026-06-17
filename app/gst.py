@@ -164,7 +164,7 @@ class GstPlayer:
                     "videotestsrc pattern=black is-live=true ! "
                     "video/x-raw,width=1280,height=720,framerate=10/1 ! "
                     "textoverlay name=t valignment=center halignment=center "
-                    'line-alignment=center font-desc="Sans, 40" ! kmssink')
+                    'line-alignment=center font-desc="Sans, 20" ! kmssink')
             except Exception as e:  # noqa
                 self.log("splash pipeline failed: %s" % e)
                 return
