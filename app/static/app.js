@@ -128,8 +128,11 @@ function itemRow(it, i) {
     : isStream
       ? `<input class="dur" type="number" min="1" step="1" value="${it.duration ?? ""}" placeholder="live"> s`
       : `<input class="out" type="number" min="0" step="0.1" value="${it.out ?? ""}" placeholder="end">`));
-  // loops
-  tr.appendChild(cell((isImg || isStream) ? (isImg ? "1" : "–") : `<input class="loop" value="${it.loop ?? 1}">`));
+  // loops (streams: subtitles on/off instead)
+  tr.appendChild(cell(
+    isImg ? "1"
+    : isStream ? `<label class="inline"><input type="checkbox" class="subs" ${it.subtitles ? "checked" : ""}> CC</label>`
+    : `<input class="loop" value="${it.loop ?? 1}">`));
   // volume
   tr.appendChild(cell(isImg ? "–" : `<input class="vol" type="number" min="0" max="130" value="${it.volume ?? 100}">`));
   // fades
@@ -167,6 +170,7 @@ function collectItems() {
         id: src.id, type: "stream", provider: src.provider,
         channel: src.channel, name: src.name,
         duration: dv === "" ? null : (parseFloat(dv) || null),
+        subtitles: g("subs") ? g("subs").checked : false,
         volume: parseInt(g("vol").value) || 100,
         fade_in: parseFloat(g("fin").value) || 0,
         fade_out: parseFloat(g("fout").value) || 0,
@@ -248,7 +252,7 @@ $("#pl-add-stream").onclick = async () => {
       cur.items = collectItems();
       cur.loop_playlist = $("#pl-loop").checked;
       cur.items.push({ id: rid(), type: "stream", provider: "nrk", channel: ch.id,
-        name: ch.name, duration: null, volume: 100, fade_in: 0, fade_out: 0 });
+        name: ch.name, duration: null, subtitles: false, volume: 100, fade_in: 0, fade_out: 0 });
       renderPlaylistItems();
       await persistPlaylist(cur);
       $("#modal-close").onclick();

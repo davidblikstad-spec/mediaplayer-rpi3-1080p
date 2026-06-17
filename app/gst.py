@@ -174,10 +174,11 @@ class GstPlayer:
             pipe.set_state(Gst.State.PLAYING)
 
     # ---- loading / playback ----------------------------------------------
-    def load(self, src, *, kind, start=0.0, end=None, hold=None):
+    def load(self, src, *, kind, start=0.0, end=None, hold=None, subtitles=False):
         """Show `src`. kind: 'image' freezes a frame for `hold` seconds;
-        'stream' plays a live URL (optionally auto-advancing after `hold`);
-        anything else plays a local video/audio file, trimmed to [start, end]."""
+        'stream' plays a live URL (optionally auto-advancing after `hold`,
+        subtitles on/off); anything else plays a local video/audio file, trimmed
+        to [start, end]."""
         with self._lock:
             self._cancel_image_timer()
             self._cur_path = src
@@ -189,17 +190,23 @@ class GstPlayer:
                 self._play_image(src, hold)
             elif kind == "stream":
                 self._stop_image()
-                self._play_video(src, 0.0, None, is_url=True)
+                self._play_video(src, 0.0, None, is_url=True, subtitles=subtitles)
                 if hold:                         # live stream, advance after N s
                     self._arm_image_timer(hold)
             else:
                 self._stop_image()
                 self._play_video(src, self._cur_start, end)
 
-    def _play_video(self, src, start, end, is_url=False):
+    _TEXT_FLAG = 1 << 2                           # GST_PLAY_FLAG_TEXT
+
+    def _play_video(self, src, start, end, is_url=False, subtitles=False):
         pb = self.playbin
         if pb is None:
             return
+        if is_url:                                # subtitles on/off for streams
+            flags = pb.get_property("flags")
+            flags = (flags | self._TEXT_FLAG) if subtitles else (flags & ~self._TEXT_FLAG)
+            pb.set_property("flags", flags)
         # Start clock-synced so A/V aligns from the first frames. Streams then
         # flip to sync=false after STREAM_SYNC_HOLD_S (see _arm_sync_flip): a
         # live clock is too jittery to keep syncing to (causes dropouts), but by
@@ -691,7 +698,8 @@ class PlayerEngine:
                          % (item.get("name") or item.get("channel")))
                 self._retry_current(gen)
                 return
-            self.player.load(url, kind="stream", hold=hold)
+            self.player.load(url, kind="stream", hold=hold,
+                             subtitles=bool(item.get("subtitles")))
             eff_len = hold
         else:
             tin = float(item.get("in") or 0)
