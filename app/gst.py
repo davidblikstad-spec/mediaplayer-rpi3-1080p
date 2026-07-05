@@ -67,6 +67,7 @@ class GstPlayer:
         self._av_delay_ms = STREAM_AV_DELAY_MS
         self._sync_timer = None              # flips stream audio to free-float
         self._shot_lock = threading.Lock()   # single-flight HDMI snapshots
+        self._img_shown_path = None          # file on the live image pipeline
 
     # ---- lifecycle --------------------------------------------------------
     def start(self):
@@ -248,6 +249,16 @@ class GstPlayer:
         t.start()
 
     def _play_image(self, path, dur):
+        # If this exact still image is already on a live pipeline, don't rebuild:
+        # imagefreeze holds the frame indefinitely, so tearing the pipeline down
+        # and building a new one every `dur` seconds is pointless and harmful —
+        # it churns the kmssink/DRM plane, orphaning pipelines (leaking threads/
+        # fds/memory to an eventual OOM) and can wedge HDMI. Just re-arm the
+        # advance timer so multi-item playlists still rotate.
+        if self.imgpipe is not None and self._img_shown_path == path:
+            self._arm_image_timer(dur)
+            return
+        self._stop_image()   # switching images: fully tear the previous one down
         pipe = Gst.Pipeline.new("imgpipe")
         src = Gst.ElementFactory.make("filesrc", None)
         dec = Gst.ElementFactory.make("decodebin", None)
@@ -267,6 +278,7 @@ class GstPlayer:
         dec.connect("pad-added",
                     lambda _dbin, pad: pad.link(freeze.get_static_pad("sink")))
         self.imgpipe = pipe
+        self._img_shown_path = path
         self._active_bus = pipe.get_bus()
         pipe.set_state(Gst.State.PLAYING)
         # images don't EOS (imagefreeze loops); advance via a timer instead
@@ -307,6 +319,7 @@ class GstPlayer:
         if self.imgpipe is not None:
             self.imgpipe.set_state(Gst.State.NULL)
             self.imgpipe = None
+        self._img_shown_path = None
 
     def stop(self):
         """Blank the screen and play nothing (releases the DRM plane)."""
