@@ -18,7 +18,6 @@ surfaced to listeners as {"event": "end-file", "reason": "eof"} — the exact
 contract PlayerEngine consumed from mpv, so the playlist engine is unchanged in
 spirit.
 """
-import fcntl
 import os
 import subprocess
 import threading
@@ -68,49 +67,10 @@ class GstPlayer:
         self._av_delay_ms = STREAM_AV_DELAY_MS
         self._sync_timer = None              # flips stream audio to free-float
         self._shot_lock = threading.Lock()   # single-flight HDMI snapshots
-        self._drm_fd = -1                    # process-owned DRM master fd (shared)
-
-    # DRM ioctls (see uapi/drm/drm.h): _IO('d', 0x1e / 0x1f).
-    _DRM_CARD = "/dev/dri/card0"
-    _DRM_IOCTL_SET_MASTER = 0x641E
-
-    def _ensure_drm_master(self):
-        """Open the DRM device once and hold master for the whole process life,
-        so every kmssink can share this one fd via its `fd` property.
-
-        Each kmssink that opens its *own* fd only becomes DRM master if it is the
-        first opener while the plane is free. Once any fd holds master, a newly
-        opened kmssink fd is a non-master client and its drmModeSetPlane is
-        denied ("Permission denied") — so rebuilding a pipeline (splash -> image,
-        item -> item) wedges HDMI, and the leaked master fd never lets go. One
-        shared, always-master fd removes the whole class of failure."""
-        if self._drm_fd >= 0:
-            return self._drm_fd
-        try:
-            fd = os.open(self._DRM_CARD, os.O_RDWR | os.O_CLOEXEC)
-        except OSError as e:
-            self.log("drm: cannot open %s: %s" % (self._DRM_CARD, e))
-            return -1
-        # First opener on the active VT is granted master automatically; if some
-        # other client (e.g. fbcon) still holds it, ask for it explicitly. A
-        # failure here isn't fatal — kmssink will surface any real problem.
-        try:
-            fcntl.ioctl(fd, self._DRM_IOCTL_SET_MASTER, 0)
-        except OSError:
-            pass
-        self._drm_fd = fd
-        return fd
-
-    def _attach_drm_fd(self, sink):
-        """Point a kmssink at the shared master fd. kmssink uses a supplied fd
-        as-is and does not close it on NULL, so master survives every rebuild."""
-        if sink is not None and self._drm_fd >= 0:
-            sink.set_property("fd", self._drm_fd)
 
     # ---- lifecycle --------------------------------------------------------
     def start(self):
         self._stop = False
-        self._ensure_drm_master()
         self._blank_console()
         try:
             cfg = config.load()["settings"]
@@ -145,7 +105,6 @@ class GstPlayer:
         vsink = Gst.ElementFactory.make("kmssink", "vsink")
         if vsink is not None:
             vsink.set_property("enable-last-sample", True)  # for cheap snapshots
-            self._attach_drm_fd(vsink)
             pb.set_property("video-sink", vsink)
         asink = self._make_audio_sink()
         if asink is not None:
@@ -205,12 +164,11 @@ class GstPlayer:
                     "videotestsrc pattern=black is-live=true ! "
                     "video/x-raw,width=1280,height=720,framerate=10/1 ! "
                     "textoverlay name=t valignment=center halignment=center "
-                    'line-alignment=center font-desc="Sans, 20" ! kmssink name=vsink')
+                    'line-alignment=center font-desc="Sans, 20" ! kmssink')
             except Exception as e:  # noqa
                 self.log("splash pipeline failed: %s" % e)
                 return
             pipe.get_by_name("t").set_property("text", text)
-            self._attach_drm_fd(pipe.get_by_name("vsink"))
             self.imgpipe = pipe
             self._active_bus = pipe.get_bus()
             pipe.set_state(Gst.State.PLAYING)
@@ -299,7 +257,6 @@ class GstPlayer:
         if not all([pipe, src, dec, freeze, conv, sink]):
             self.log("image pipeline: missing element")
             return
-        self._attach_drm_fd(sink)
         src.set_property("location", path)
         for e in (src, dec, freeze, conv, sink):
             pipe.add(e)
