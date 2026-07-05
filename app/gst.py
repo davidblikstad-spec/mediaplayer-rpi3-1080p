@@ -438,35 +438,43 @@ class GstPlayer:
             data = bytes(mi.data)
         finally:
             buf.unmap(mi)
-        # Encode the raw frame with a short-lived ffmpeg subprocess rather than a
-        # per-call GStreamer pipeline. A parse_launch pipeline here leaked
-        # streaming threads + fds on every snapshot (the dashboard polls this
-        # every few seconds), which grew the process to an OOM kill in minutes.
-        # A subprocess releases all its threads/fds on exit, so this holds flat.
-        # We still avoid a re-decode: the already-decoded, tightly-packed 4:2:0
-        # frame is piped straight to ffmpeg as rawvideo.
-        pix = {"I420": "yuv420p", "NV12": "nv12", "NV21": "nv21"}.get(fmt)
-        if pix is None:                       # e.g. YV12's planes are swapped
-            return False                      # let the ffmpeg re-decode path handle it
-        tw = 640                              # preview width; height auto (even)
-        tmp = path + ".tmp.jpg"
-        cmd = ["ffmpeg", "-y", "-nostdin", "-threads", "1",
-               "-f", "rawvideo", "-pix_fmt", pix, "-s", "%dx%d" % (w, h), "-i", "pipe:0",
-               "-frames:v", "1", "-vf", "scale=%d:-2" % tw, "-q:v", "3", "-f", "image2", tmp]
+        tw = 640
+        th = max(2, int(round(tw * h / w)) & ~1)
+        desc = ("appsrc name=src format=time "
+                "caps=video/x-raw,format=%s,width=%d,height=%d,framerate=25/1 "
+                "! videoconvert ! videoscale ! video/x-raw,width=%d,height=%d "
+                "! jpegenc quality=70 ! appsink name=out max-buffers=1"
+                % (fmt, w, h, tw, th))
         try:
-            r = subprocess.run(cmd, input=data, capture_output=True, timeout=15)
-            if r.returncode == 0 and os.path.exists(tmp):
-                os.replace(tmp, path)
-                return True
+            conv = Gst.parse_launch(desc)
+        except Exception:
             return False
+        try:
+            src = conv.get_by_name("src")
+            out = conv.get_by_name("out")
+            conv.set_state(Gst.State.PLAYING)
+            src.emit("push-buffer", Gst.Buffer.new_wrapped(data))
+            src.emit("end-of-stream")
+            s = out.emit("try-pull-sample", 4 * Gst.SECOND)
+            if not s:
+                return False
+            b = s.get_buffer()
+            ok, mi = b.map(Gst.MapFlags.READ)
+            if not ok:
+                return False
+            try:
+                jpg = bytes(mi.data)
+            finally:
+                b.unmap(mi)
+            tmp = path + ".tmp.jpg"
+            with open(tmp, "wb") as f:
+                f.write(jpg)
+            os.replace(tmp, path)
+            return True
         except Exception:
             return False
         finally:
-            try:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
-            except OSError:
-                pass
+            conv.set_state(Gst.State.NULL)
 
     def _grab_with_ffmpeg(self, path):
         """Fallback: decode one frame from the source with ffmpeg (one thread)."""
