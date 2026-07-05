@@ -173,6 +173,9 @@ def create_app():
                 and transcode.needs_transcode(info.get("width"),
                                               info.get("height"),
                                               info.get("codec")))
+            it["needs_downscale"] = (
+                it["type"] == "image"
+                and transcode.needs_image_downscale(info.get("width")))
         return jsonify(items)
 
     @app.route("/api/upload", methods=["POST"])
@@ -195,6 +198,13 @@ def create_app():
                 transcode.start(name, w or 0, h or 0, dur or 0, log=log)
                 frm = "%dx%d" % (w, h) if w and h else (info.get("codec") or "?")
                 resp["transcode"] = {"needed": True, "from": frm}
+        elif media.media_type(name) == "image":
+            info = media.probe(name)
+            if transcode.needs_image_downscale(info.get("width")):
+                frm = "%dx%d" % (info.get("width") or 0, info.get("height") or 0)
+                if transcode.downscale_image(name, log=log):
+                    resp["downscaled"] = {"done": True, "from": frm,
+                                          "to": "%dpx wide" % transcode.MAX_IMAGE_W}
         return jsonify(resp)
 
     @app.route("/api/transcode")
