@@ -50,7 +50,8 @@ async function pollState() {
     <div><b>Playlist</b> ${p.playlist_name ? esc(p.playlist_name) : "–"} ${p.count ? `(${p.index + 1}/${p.count})` : ""}</div>
     <div><b>Position</b> ${fmt(p.time_pos)} / ${fmt(p.duration)}</div>
     <div><b>Volume</b> ${p.volume != null ? Math.round(p.volume) : "–"}</div>
-    <div><b>State</b> ${p.paused ? "paused" : (p.current ? "playing" : "idle")} · player ${s.player_alive ? "ok" : "down"}</div>`;
+    <div><b>State</b> ${p.blanked ? "screen blanked" : (p.paused ? "paused" : (p.current ? "playing" : "idle"))} · player ${s.player_alive ? "ok" : "down"}</div>`;
+  renderBlank(!!p.blanked);
 }
 function renderQuickplay() {
   $("#quickplay").innerHTML = "";
@@ -64,6 +65,19 @@ function renderQuickplay() {
 $("#btn-pause").onclick = () => api("POST", "/api/pause");
 $("#btn-next").onclick = () => api("POST", "/api/next");
 $("#btn-stop").onclick = () => api("POST", "/api/stop");
+let blanked = false;
+function renderBlank(on) {
+  blanked = on;
+  const b = $("#btn-blank");
+  b.textContent = on ? "▶ Unblank screen" : "■ Blank screen";
+  b.classList.toggle("danger", on);
+  $("#snapshot-empty").textContent = on ? "screen blanked" : "no preview yet";
+  if (on) { $("#snapshot").style.display = "none"; $("#snapshot-empty").style.display = "block"; }
+}
+$("#btn-blank").onclick = async () => {
+  const r = await api("POST", "/api/blank", { blank: !blanked });
+  if (r && "blanked" in r) renderBlank(r.blanked);
+};
 $$("[data-cec]").forEach(b => b.onclick = async () => {
   const r = await api("POST", "/api/cec", { action: b.dataset.cec });
   $("#cec-out").textContent = (r.ok ? "OK\n" : "FAILED\n") + (r.output || "");

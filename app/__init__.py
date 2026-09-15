@@ -410,6 +410,16 @@ def create_app():
         gstmod.engine.stop()
         return jsonify({"ok": True})
 
+    @app.route("/api/blank", methods=["POST"])
+    @login_required
+    def api_blank():
+        body = request.get_json(silent=True) or {}
+        if body.get("blank", True):
+            gstmod.engine.blank()
+        else:
+            gstmod.engine.unblank()
+        return jsonify({"ok": True, "blanked": gstmod.engine.blanked})
+
     @app.route("/api/pause", methods=["POST"])
     @login_required
     def api_pause():
@@ -443,6 +453,8 @@ def create_app():
     @login_required
     def api_snapshot():
         path = os.path.join(config.PREVIEW_DIR, "live.jpg")
+        if gstmod.engine.blanked:
+            abort(404)            # screen is black; UI shows "screen blanked"
         now = time.time()
         # refresh at the configured interval (>=2s); the grab itself is
         # single-flight and runs in the background (see GstPlayer.screenshot)

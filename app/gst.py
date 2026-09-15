@@ -174,6 +174,30 @@ class GstPlayer:
             self._active_bus = pipe.get_bus()
             pipe.set_state(Gst.State.PLAYING)
 
+    def blank(self):
+        """Show a solid black frame on the HDMI output until the next load().
+        Holds the DRM plane with a black pipeline (like splash) rather than just
+        releasing it, so the panel is guaranteed black instead of whatever the
+        plane/console last showed. Stored as imgpipe, so load() tears it down."""
+        with self._lock:
+            self._cancel_image_timer()
+            self._stop_video()
+            self._stop_image()
+            self._cur_kind = "blank"
+            self._cur_path = None
+            self._paused = False
+            try:
+                pipe = Gst.parse_launch(
+                    "videotestsrc pattern=black is-live=true ! "
+                    "video/x-raw,width=1280,height=720,framerate=1/1 ! kmssink")
+            except Exception as e:  # noqa
+                self.log("blank pipeline failed: %s" % e)
+                self._active_bus = None
+                return
+            self.imgpipe = pipe
+            self._active_bus = pipe.get_bus()
+            pipe.set_state(Gst.State.PLAYING)
+
     # ---- loading / playback ----------------------------------------------
     def load(self, src, *, kind, start=0.0, end=None, hold=None, subtitles=False):
         """Show `src`. kind: 'image' freezes a frame for `hold` seconds;
@@ -334,8 +358,8 @@ class GstPlayer:
     # ---- transport / properties ------------------------------------------
     def toggle_pause(self):
         with self._lock:
-            if self._cur_kind == "image" or self.playbin is None:
-                return  # a frozen image has nothing to pause
+            if self._cur_kind in ("image", "blank", "splash") or self.playbin is None:
+                return  # a frozen image / black screen has nothing to pause
             self._paused = not self._paused
             self.playbin.set_state(
                 Gst.State.PAUSED if self._paused else Gst.State.PLAYING)
@@ -562,6 +586,7 @@ class PlayerEngine:
         self.current = None       # the item dict now playing
         self.playlist_name = None
         self.playing_default = False
+        self.blanked = False      # screen forced black; any new play clears it
         self._gen = 0             # generation counter to cancel stale timers
         player.event_handlers.append(self._on_event)
 
@@ -596,6 +621,7 @@ class PlayerEngine:
             self.items = []
             self.playlist_name = None
             self.current = None
+            self.blanked = False
             if not item:
                 self.playing_default = True
                 self._bump_gen()
@@ -613,12 +639,28 @@ class PlayerEngine:
         """Stop the active playlist and fall back to the default item."""
         self.play_default()
 
+    def blank(self):
+        """Black out the screen. The current playlist/position is remembered so
+        unblank() resumes it; any new play (manual or scheduled) also unblanks."""
+        with self.lock:
+            self._bump_gen()          # cancel fades / retries of the current item
+            self.blanked = True
+            self.player.blank()
+
+    def unblank(self):
+        with self.lock:
+            if not self.blanked:
+                return
+            self.blanked = False
+            self.reapply()
+
     def status(self):
         with self.lock:
             cur = self.current
         return {
             "playing": cur is not None,
             "playing_default": self.playing_default,
+            "blanked": self.blanked,
             "playlist_name": self.playlist_name,
             "index": self.index,
             "count": len(self.items),
@@ -696,6 +738,7 @@ class PlayerEngine:
 
     def _play_item(self, item):
         self.current = item
+        self.blanked = False
         gen = self._bump_gen()
         t = item["_type"]
         eff_len = None
