@@ -41,6 +41,15 @@ STREAM_SYNC_HOLD_S = 3.0
 # the auto-alignment leaves a residual offset. Overridden by stream_av_delay_ms.
 STREAM_AV_DELAY_MS = 0
 
+# Stall watchdog: if a playing video's position hasn't moved for this long, the
+# pipeline is wedged (typically frozen on its first frame because the audio sink
+# -- which provides the pipeline clock -- stopped consuming, e.g. HDMI audio
+# went away when the display slept). Recovery: 1) rebuild playbin and reload,
+# 2) reload with audio disabled for NO_AUDIO_HOLD_S, 3) give up on the item.
+STALL_S = 8.0
+STALL_STREAM_S = 20.0            # live streams may buffer for a while
+NO_AUDIO_HOLD_S = 600.0
+
 
 class GstPlayer:
     """Owns the GStreamer pipelines and exposes mpv-style playback primitives."""
@@ -68,6 +77,11 @@ class GstPlayer:
         self._sync_timer = None              # flips stream audio to free-float
         self._shot_lock = threading.Lock()   # single-flight HDMI snapshots
         self._img_shown_path = None          # file on the live image pipeline
+        self._load_args = None               # last load() call, for recovery
+        self._wd_pos = None                  # last position seen by watchdog
+        self._wd_since = time.monotonic()    # when position last moved
+        self._stall_tries = 0                # recoveries since last progress
+        self._no_audio_until = 0.0           # play video-only until then
 
     # ---- lifecycle --------------------------------------------------------
     def start(self):
@@ -82,6 +96,7 @@ class GstPlayer:
         self._build_playbin()
         self._watcher = threading.Thread(target=self._watch_bus, daemon=True)
         self._watcher.start()
+        threading.Thread(target=self._watchdog, daemon=True).start()
 
     def _blank_console(self):
         """Clear the text console and hide its cursor so the bare framebuffer
@@ -206,6 +221,10 @@ class GstPlayer:
         to [start, end]."""
         with self._lock:
             self._cancel_image_timer()
+            self._load_args = (src, dict(kind=kind, start=start, end=end,
+                                         hold=hold, subtitles=subtitles))
+            self._wd_pos = None
+            self._wd_since = time.monotonic()
             self._cur_path = src
             self._cur_start = float(start or 0.0)
             self._cur_kind = kind
@@ -222,6 +241,7 @@ class GstPlayer:
                 self._stop_image()
                 self._play_video(src, self._cur_start, end)
 
+    _AUDIO_FLAG = 1 << 1                          # GST_PLAY_FLAG_AUDIO
     _TEXT_FLAG = 1 << 2                           # GST_PLAY_FLAG_TEXT
 
     def _play_video(self, src, start, end, is_url=False, subtitles=False):
@@ -243,6 +263,12 @@ class GstPlayer:
             self._adelay.set_property(
                 "min-threshold-time", self._av_delay_ms * Gst.MSECOND if is_url else 0)
         pb.set_state(Gst.State.READY)            # flush any previous stream
+        # video-only while the audio output is known to be wedged (see watchdog)
+        flags = pb.get_property("flags")
+        if time.monotonic() < self._no_audio_until:
+            pb.set_property("flags", flags & ~self._AUDIO_FLAG)
+        else:
+            pb.set_property("flags", flags | self._AUDIO_FLAG)
         pb.set_property("uri", src if is_url else Gst.filename_to_uri(src))
         pb.set_state(Gst.State.PAUSED)
         pb.get_state((20 if is_url else 5) * Gst.SECOND)   # wait for preroll
@@ -354,6 +380,7 @@ class GstPlayer:
             self._cur_path = None
             self._cur_kind = None
             self._active_bus = None
+            self._load_args = None
 
     # ---- transport / properties ------------------------------------------
     def toggle_pause(self):
@@ -409,6 +436,7 @@ class GstPlayer:
             self._audio_device = name[len("alsa/"):]
         else:
             self._audio_device = name
+        self._no_audio_until = 0.0         # give the (new) device a fresh try
         self.log("audio device set to %s" % (self._audio_device or "default"))
 
     def set_av_delay(self, ms):
@@ -554,15 +582,90 @@ class GstPlayer:
                 continue
             msg = bus.timed_pop_filtered(
                 100 * Gst.MSECOND,
-                Gst.MessageType.EOS | Gst.MessageType.ERROR)
+                Gst.MessageType.EOS | Gst.MessageType.ERROR
+                | Gst.MessageType.WARNING)
             if msg is None:
                 continue
-            if msg.type == Gst.MessageType.EOS:
+            if msg.type == Gst.MessageType.WARNING:
+                err, dbg = msg.parse_warning()
+                self.log("gst warning: %s (%s)" % (err, dbg))
+            elif msg.type == Gst.MessageType.EOS:
                 self._emit({"event": "end-file", "reason": "eof"})
             elif msg.type == Gst.MessageType.ERROR:
                 err, dbg = msg.parse_error()
                 self.log("gst error: %s (%s)" % (err, dbg))
                 self._emit({"event": "end-file", "reason": "error"})
+
+    # ---- stall watchdog ---------------------------------------------------
+    def _watchdog(self):
+        while not self._stop:
+            time.sleep(1.0)
+            try:
+                self._watchdog_tick()
+            except Exception as e:  # noqa
+                self.log("watchdog error: %s" % e)
+
+    def _watchdog_tick(self):
+        now = time.monotonic()
+        kind = self._cur_kind
+        pb = self.playbin
+        if (pb is None or self._paused or self._load_args is None
+                or kind in (None, "image", "splash", "blank")):
+            self._wd_since = now
+            return
+        _ret, state, _pending = pb.get_state(0)
+        pos = self.get_time_pos()
+        if state == Gst.State.PLAYING and pos is not None and pos != self._wd_pos:
+            if self._wd_pos is not None and pos - self._wd_pos > 0:
+                self._stall_tries = 0     # genuinely progressing
+            self._wd_pos = pos
+            self._wd_since = now
+            return
+        limit = STALL_STREAM_S if kind == "stream" else STALL_S
+        if now - self._wd_since < limit:
+            return
+        self._wd_since = now
+        self._recover_stall(state, pos)
+
+    def _describe_sinks(self):
+        out = []
+        for name, el in (("video", self.playbin and self.playbin.get_by_name("vsink")),
+                         ("audio", self._asink)):
+            if el is None:
+                continue
+            _r, st, pend = el.get_state(0)
+            out.append("%s=%s/%s" % (name, st.value_nick, pend.value_nick))
+        return " ".join(out)
+
+    def _recover_stall(self, state, pos):
+        with self._lock:
+            if self._load_args is None:
+                return
+            src, kw = self._load_args
+            self._stall_tries += 1
+            tries = self._stall_tries
+            self.log("playback stalled (%s, state=%s, pos=%s, %s, audio=%s); "
+                     "recovery attempt %d"
+                     % (os.path.basename(src) if src else src,
+                        state.value_nick, pos, self._describe_sinks(),
+                        self._audio_device or "default", tries))
+            if tries >= 3:
+                give_up = True
+            else:
+                give_up = False
+                if tries == 2:
+                    self._no_audio_until = time.monotonic() + NO_AUDIO_HOLD_S
+                    self.log("audio output looks wedged; playing video WITHOUT "
+                             "audio for %d min" % (NO_AUDIO_HOLD_S // 60))
+                kw = dict(kw)
+                if kw["kind"] not in ("stream",) and pos:
+                    kw["start"] = max(float(kw.get("start") or 0), pos)
+                self.restart()                # fresh playbin + sinks
+                self.load(src, **kw)
+        if give_up:
+            self._stall_tries = 0
+            self.log("playback still stalled; skipping item")
+            self._emit({"event": "end-file", "reason": "error"})
 
     def _emit(self, ev):
         for h in list(self.event_handlers):
