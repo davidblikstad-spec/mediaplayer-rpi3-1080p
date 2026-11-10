@@ -61,6 +61,20 @@ GEOM_OVERLAP = 2.0       # % of the picture that must stay on screen
 NATIVE_VIDEO_FLAG = 0x40  # playbin: no software convert around our filter
 
 
+_GEOM_LOG = os.path.join(config.DATA_DIR, "geometry.log")
+
+
+def glog(msg):
+    """Geometry diagnostics to a small file (stdout goes to the TV console)."""
+    try:
+        if os.path.exists(_GEOM_LOG) and os.path.getsize(_GEOM_LOG) > 200000:
+            os.replace(_GEOM_LOG, _GEOM_LOG + ".1")
+        with open(_GEOM_LOG, "a") as fh:
+            fh.write("%s %s\n" % (time.strftime("%H:%M:%S"), msg))
+    except Exception:
+        pass
+
+
 def clean_geometry(g):
     """Clamp a geometry dict so the picture is sane and still on screen."""
     g = g or {}
@@ -323,6 +337,8 @@ class GstPlayer:
         pb.set_property("uri", src if is_url else Gst.filename_to_uri(src))
         pb.set_state(Gst.State.PAUSED)
         pb.get_state((20 if is_url else 5) * Gst.SECOND)   # wait for preroll
+        if self._vfilter is not None:
+            self._apply_geom(self._vfilter)
         if not is_url and (start > 0 or end is not None):
             flags = Gst.SeekFlags.FLUSH | Gst.SeekFlags.ACCURATE
             stop_type = Gst.SeekType.SET if end is not None else Gst.SeekType.NONE
@@ -408,6 +424,7 @@ class GstPlayer:
         self._img_shown_path = path
         self._active_bus = pipe.get_bus()
         pipe.set_state(Gst.State.PLAYING)
+        self._geom_when_running(pipe, filt)
         # images don't EOS (imagefreeze loops); advance via a timer instead
         self._arm_image_timer(dur)
 
@@ -470,6 +487,21 @@ class GstPlayer:
                 self._vid_loaded = None      # force a full load, not a loop-seek
             return dict(self._geom), needs_reload
 
+    def _geom_when_running(self, pipe, f):
+        """Apply the geometry once `pipe` has started showing. Never from inside
+        the streaming thread or before the sink is up: that is the path that
+        left the screen black when the player started with a saved geometry."""
+        if self._geom == DEFAULT_GEOMETRY:
+            return
+        def run():
+            ret = pipe.get_state(5 * Gst.SECOND)[0]
+            time.sleep(0.3)
+            with self._lock:
+                if f is self._ifilter:
+                    glog("image running (%s), applying" % ret.value_nick)
+                    self._apply_geom(f)
+        threading.Thread(target=run, daemon=True).start()
+
     def _make_geom_filter(self, sink):
         """videocrop ! capssetter in a bin; filled in when the source size is
         known (caps) and again whenever the geometry changes."""
@@ -494,7 +526,7 @@ class GstPlayer:
                 spar = (pn / float(pd)) if ok_p and pn and pd else 1.0
                 if ok_w and ok_h and (w, h, spar) != f["src"]:
                     f["src"] = (w, h, spar)
-                    self._apply_geom(f, quiet=True)
+                    glog("caps %dx%d par %.3f" % (w, h, spar))
             return Gst.PadProbeReturn.OK
         crop.get_static_pad("sink").add_probe(
             Gst.PadProbeType.EVENT_DOWNSTREAM, on_event)
@@ -518,6 +550,8 @@ class GstPlayer:
         W, H = self._display_size(f["sink"])
         sw, sh, spar = f["src"]
         (l, r, t, b), par, vis = geometry_layout(self._geom, sw, sh, W, H, spar)
+        glog("apply %s src %dx%d disp %dx%d crop %s par %s rect %s" % (
+            self._geom, sw, sh, W, H, (l, r, t, b), par, vis))
         caps = "video/x-raw"
         if par is not None:
             caps += ",pixel-aspect-ratio=(fraction)%d/%d" % (par.numerator, par.denominator)
