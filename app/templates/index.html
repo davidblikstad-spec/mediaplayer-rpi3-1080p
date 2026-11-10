@@ -37,29 +37,34 @@
             <button id="btn-stop">Stop → default</button>
             <button id="btn-blank">■ Blank screen</button>
           </div>
-          <h3>Picture position (16:9)</h3>
+          <h3>Picture position &amp; shape</h3>
           <div class="geom">
             <div class="geom-pad">
               <span></span><button data-move="0,-1" title="Up">▲</button><span></span>
               <button data-move="-1,0" title="Left">◀</button>
-              <button id="geom-reset" title="Full screen">⟲</button>
+              <button id="geom-reset" title="Reset: full screen">⟲</button>
               <button data-move="1,0" title="Right">▶</button>
               <span></span><button data-move="0,1" title="Down">▼</button><span></span>
             </div>
             <div class="geom-side">
-              <div class="controls">
-                <button data-zoom="-1" title="Smaller">− Smaller</button>
-                <button data-zoom="1" title="Larger">+ Larger</button>
-              </div>
+              <div class="geom-row"><span>Zoom</span>
+                <button data-size="-1,-1">−</button><button data-size="1,1">+</button></div>
+              <div class="geom-row"><span>Width</span>
+                <button data-size="-1,0">↔ narrower</button><button data-size="1,0">↔ wider</button></div>
+              <div class="geom-row"><span>Height</span>
+                <button data-size="0,-1">↕ lower</button><button data-size="0,1">↕ taller</button></div>
               <label class="inline">Step
-                <select id="geom-step"><option value="0.5">0.5 %</option><option value="1" selected>1 %</option><option value="5">5 %</option></select>
+                <select id="geom-step"><option value="0.5">0.5 %</option><option value="1" selected>1 %</option><option value="5">5 %</option><option value="10">10 %</option></select>
               </label>
+            </div>
+            <div class="geom-side">
               <div class="geom-nums">
-                <label>Size % <input id="geom-scale" type="number" min="10" max="100" step="0.5"></label>
-                <label>Left % <input id="geom-x" type="number" min="0" max="90" step="0.5"></label>
-                <label>Top % <input id="geom-y" type="number" min="0" max="90" step="0.5"></label>
+                <label>Width % <input id="geom-w" type="number" min="5" max="400" step="0.5"></label>
+                <label>Height % <input id="geom-h" type="number" min="5" max="400" step="0.5"></label>
+                <label>Centre X % <input id="geom-cx" type="number" step="0.5"></label>
+                <label>Centre Y % <input id="geom-cy" type="number" step="0.5"></label>
               </div>
-              <div id="geom-preview" class="geom-preview"><div></div></div>
+              <div id="geom-preview" class="geom-preview" title="Black = the screen, blue = the picture"><div></div></div>
             </div>
           </div>
           <h3>Quick play</h3>

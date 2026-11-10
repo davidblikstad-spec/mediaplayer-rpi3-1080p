@@ -27,6 +27,7 @@ import gi
 gi.require_version("Gst", "1.0")
 gi.require_version("GstVideo", "1.0")
 from gi.repository import Gst, GLib, GstVideo  # noqa: E402
+from fractions import Fraction  # noqa: E402
 
 from . import config, media, nrk  # noqa: E402
 
@@ -42,29 +43,65 @@ STREAM_SYNC_HOLD_S = 3.0
 # the auto-alignment leaves a residual offset. Overridden by stream_av_delay_ms.
 STREAM_AV_DELAY_MS = 0
 
-# Output geometry. Some screens (LED walls, odd panels) only show part of the
-# HDMI picture, but the content is always 16:9. The geometry setting shrinks
-# the picture and moves it, done by the DRM plane itself (kmssink's render
-# rectangle), so it costs nothing per frame. scale = picture width in % of the
-# output width; x / y = its left / top edge in % of the output width / height.
-DEFAULT_GEOMETRY = {"scale": 100.0, "x": 0.0, "y": 0.0}
-MIN_SCALE = 10.0
+# ---- picture geometry ------------------------------------------------------
+# Some screens (LED walls, odd panels) show only part of the HDMI picture, and
+# some content (a logo) arrives in the wrong shape. The geometry setting places
+# the picture as a rectangle on the screen, in % of the screen:
+#   w, h   = picture width / height, in % of its natural fit on the screen
+#            (100/100 = what plays untouched: as large as fits, own shape)
+#   cx, cy = where the picture's centre is (50/50 = centred)
+# The picture may be larger than the screen (zoom past the edges) and w/h may
+# differ (stretch/squeeze). It costs nothing per frame: the part outside the
+# screen is cut off with videocrop, which kmssink takes as crop metadata
+# (no copy), the stretch is a pixel-aspect-ratio change, and the DRM plane
+# scales the rest (kmssink's render rectangle).
+DEFAULT_GEOMETRY = {"w": 100.0, "h": 100.0, "cx": 50.0, "cy": 50.0}
+GEOM_MIN, GEOM_MAX = 5.0, 400.0
+GEOM_OVERLAP = 2.0       # % of the picture that must stay on screen
+NATIVE_VIDEO_FLAG = 0x40  # playbin: no software convert around our filter
 
 
 def clean_geometry(g):
-    """Clamp a geometry dict to something that stays on screen."""
+    """Clamp a geometry dict so the picture is sane and still on screen."""
     g = g or {}
-    def num(k, d):
+    def num(k):
         try:
-            v = float(g.get(k, d))
+            v = float(g.get(k, DEFAULT_GEOMETRY[k]))
         except (TypeError, ValueError):
-            v = d
-        return v if v == v else d     # NaN -> default
-    scale = max(MIN_SCALE, min(100.0, num("scale", 100.0)))
-    x = max(0.0, min(100.0 - scale, num("x", 0.0)))
-    # height in % of the output height, for a 16:9 picture on a 16:9 output
-    y = max(0.0, min(100.0 - scale, num("y", 0.0)))
-    return {"scale": round(scale, 2), "x": round(x, 2), "y": round(y, 2)}
+            v = DEFAULT_GEOMETRY[k]
+        return v if v == v else DEFAULT_GEOMETRY[k]     # NaN -> default
+    w = max(GEOM_MIN, min(GEOM_MAX, num("w")))
+    h = max(GEOM_MIN, min(GEOM_MAX, num("h")))
+    cx = max(-w / 2 + GEOM_OVERLAP, min(100 + w / 2 - GEOM_OVERLAP, num("cx")))
+    cy = max(-h / 2 + GEOM_OVERLAP, min(100 + h / 2 - GEOM_OVERLAP, num("cy")))
+    return {"w": round(w, 2), "h": round(h, 2), "cx": round(cx, 2), "cy": round(cy, 2)}
+
+
+def geometry_layout(g, sw, sh, W, H, spar=1.0):
+    """For a sw x sh source (pixel aspect spar) on a W x H screen: (crop l, r,
+    t, b in source pixels, pixel-aspect-ratio Fraction or None, visible rect
+    x, y, w, h)."""
+    dw = sw * spar                       # source shape as displayed
+    fit = min(W / dw, H / float(sh))     # natural fit, like kmssink untouched
+    rw, rh = dw * fit * g["w"] / 100.0, sh * fit * g["h"] / 100.0
+    rx, ry = W * g["cx"] / 100.0 - rw / 2, H * g["cy"] / 100.0 - rh / 2
+    vx0, vy0 = max(0.0, rx), max(0.0, ry)
+    vx1, vy1 = min(float(W), rx + rw), min(float(H), ry + rh)
+    even = lambda v: max(0, int(v) & ~1)   # chroma-safe crop offsets
+    l = even((vx0 - rx) / rw * sw)
+    r = even((rx + rw - vx1) / rw * sw)
+    t = even((vy0 - ry) / rh * sh)
+    b = even((ry + rh - vy1) / rh * sh)
+    l, r = min(l, sw - 16), min(r, max(0, sw - 16 - l))
+    t, b = min(t, sh - 16), min(b, max(0, sh - 16 - t))
+    cw, ch = sw - l - r, sh - t - b
+    vis = (int(round(vx0)), int(round(vy0)),
+           max(2, int(round(vx1 - vx0))), max(2, int(round(vy1 - vy0))))
+    # stretch: make the cropped picture's shape equal the visible rectangle's
+    par = Fraction((vis[2] * ch) / float(vis[3] * cw)).limit_denominator(5000)
+    if g == DEFAULT_GEOMETRY:
+        par = None
+    return (l, r, t, b), par, vis
 
 
 class GstPlayer:
@@ -95,8 +132,9 @@ class GstPlayer:
         self._img_shown_path = None          # file on the live image pipeline
         self._vid_loaded = None              # (path, start, end) on the live playbin
         self._geom = dict(DEFAULT_GEOMETRY)  # see DEFAULT_GEOMETRY
-        self._geom_set = False               # a rectangle was ever applied
-        self._img_sink = None                # kmssink of the live image pipeline
+        self._vfilter = None                 # geometry filter on the playbin, once needed
+        self._ifilter = None                 # geometry filter of the live image pipeline
+        self._disp = (1920, 1080)            # last real display size seen
 
     # ---- lifecycle --------------------------------------------------------
     def start(self):
@@ -137,11 +175,11 @@ class GstPlayer:
         if vsink is not None:
             vsink.set_property("enable-last-sample", True)  # for cheap snapshots
             pb.set_property("video-sink", vsink)
-            self._apply_geometry(vsink)
         asink = self._make_audio_sink()
         if asink is not None:
             pb.set_property("audio-sink", asink)
         self.playbin = pb
+        self._vfilter = None
 
     def _make_audio_sink(self):
         """Build the audio sink as `queue ! alsasink` so load() can toggle
@@ -276,6 +314,12 @@ class GstPlayer:
                 "min-threshold-time", self._av_delay_ms * Gst.MSECOND if is_url else 0)
         self._vid_loaded = None
         pb.set_state(Gst.State.READY)            # flush any previous stream
+        # The geometry filter goes in only once the picture has been moved or
+        # reshaped, so the untouched setup keeps its proven video path.
+        if self._vfilter is None and self._geom != DEFAULT_GEOMETRY:
+            self._vfilter = self._make_geom_filter(pb.get_property("video-sink"))
+            pb.set_property("video-filter", self._vfilter["bin"])
+            pb.set_property("flags", pb.get_property("flags") | NATIVE_VIDEO_FLAG)
         pb.set_property("uri", src if is_url else Gst.filename_to_uri(src))
         pb.set_state(Gst.State.PAUSED)
         pb.get_state((20 if is_url else 5) * Gst.SECOND)   # wait for preroll
@@ -349,13 +393,14 @@ class GstPlayer:
             self.log("image pipeline: missing element")
             return
         src.set_property("location", path)
-        self._apply_geometry(sink)
-        self._img_sink = sink
-        for e in (src, dec, freeze, conv, sink):
+        filt = self._make_geom_filter(sink)
+        for e in (src, dec, freeze, conv, filt["bin"], sink):
             pipe.add(e)
         src.link(dec)
         freeze.link(conv)
-        conv.link(sink)
+        conv.link(filt["bin"])
+        filt["bin"].link(sink)
+        self._ifilter = filt
         # decodebin exposes its src pad only once the image type is known
         dec.connect("pad-added",
                     lambda _dbin, pad: pad.link(freeze.get_static_pad("sink")))
@@ -403,29 +448,59 @@ class GstPlayer:
             self.imgpipe.set_state(Gst.State.NULL)
             self.imgpipe = None
         self._img_shown_path = None
-        self._img_sink = None
+        self._ifilter = None
 
-    # ---- output geometry ---------------------------------------------------
+    # ---- picture geometry --------------------------------------------------
     def get_geometry(self):
         return dict(self._geom)
 
     def set_geometry(self, g):
-        """Move/scale the picture on the live sinks right away (no reload)."""
+        """Apply a new geometry to what is on screen now. Returns (geometry,
+        needs_reload): a playing video without the filter yet must be reloaded
+        once to get it."""
         with self._lock:
             self._geom = clean_geometry(g)
-            sinks = [self._img_sink]
-            if self.playbin is not None:
-                sinks.append(self.playbin.get_property("video-sink"))
-            for s in sinks:
-                if s is not None:
-                    self._apply_geometry(s, redraw=True)
-            return dict(self._geom)
+            for f in (self._ifilter, self._vfilter):
+                if f is not None:
+                    self._apply_geom(f)
+            needs_reload = (self._cur_kind not in (None, "image", "blank", "splash")
+                            and self._vfilter is None
+                            and self._geom != DEFAULT_GEOMETRY)
+            if needs_reload:
+                self._vid_loaded = None      # force a full load, not a loop-seek
+            return dict(self._geom), needs_reload
 
-    def _apply_geometry(self, sink, redraw=False):
-        g = self._geom
-        if g == DEFAULT_GEOMETRY and not self._geom_set:
-            return            # untouched: leave kmssink on its own full-screen path
-        # A sink that is not yet open reports 0; use the last real size seen.
+    def _make_geom_filter(self, sink):
+        """videocrop ! capssetter in a bin; filled in when the source size is
+        known (caps) and again whenever the geometry changes."""
+        binn = Gst.Bin.new(None)
+        crop = Gst.ElementFactory.make("videocrop", None)
+        par = Gst.ElementFactory.make("capssetter", None)
+        par.set_property("caps", Gst.Caps.from_string("video/x-raw"))
+        binn.add(crop)
+        binn.add(par)
+        crop.link(par)
+        binn.add_pad(Gst.GhostPad.new("sink", crop.get_static_pad("sink")))
+        binn.add_pad(Gst.GhostPad.new("src", par.get_static_pad("src")))
+        f = {"bin": binn, "crop": crop, "par": par, "sink": sink, "src": None}
+
+        def on_event(pad, info):
+            ev = info.get_event()
+            if ev.type == Gst.EventType.CAPS:
+                s = ev.parse_caps().get_structure(0)
+                ok_w, w = s.get_int("width")
+                ok_h, h = s.get_int("height")
+                ok_p, pn, pd = s.get_fraction("pixel-aspect-ratio")
+                spar = (pn / float(pd)) if ok_p and pn and pd else 1.0
+                if ok_w and ok_h and (w, h, spar) != f["src"]:
+                    f["src"] = (w, h, spar)
+                    self._apply_geom(f, quiet=True)
+            return Gst.PadProbeReturn.OK
+        crop.get_static_pad("sink").add_probe(
+            Gst.PadProbeType.EVENT_DOWNSTREAM, on_event)
+        return f
+
+    def _display_size(self, sink):
         try:
             W = int(sink.get_property("display-width") or 0)
             H = int(sink.get_property("display-height") or 0)
@@ -433,17 +508,34 @@ class GstPlayer:
             W = H = 0
         if W and H:
             self._disp = (W, H)
-        else:
-            W, H = getattr(self, "_disp", (1920, 1080))
-        w = int(round(W * g["scale"] / 100.0))
-        h = min(H, int(round(w * 9 / 16.0)))
-        x = min(int(round(W * g["x"] / 100.0)), W - w)
-        y = min(int(round(H * g["y"] / 100.0)), H - h)
+        return self._disp
+
+    def _apply_geom(self, f, quiet=False):
+        """Set crop, aspect and render rectangle for one filter. quiet = called
+        from the caps probe, where the new caps are about to flow anyway."""
+        if f["src"] is None:
+            return
+        W, H = self._display_size(f["sink"])
+        sw, sh, spar = f["src"]
+        (l, r, t, b), par, vis = geometry_layout(self._geom, sw, sh, W, H, spar)
+        caps = "video/x-raw"
+        if par is not None:
+            caps += ",pixel-aspect-ratio=(fraction)%d/%d" % (par.numerator, par.denominator)
         try:
-            GstVideo.VideoOverlay.set_render_rectangle(sink, x, y, w, h)
-            self._geom_set = True
-            if redraw:
-                GstVideo.VideoOverlay.expose(sink)
+            f["par"].set_property("caps", Gst.Caps.from_string(caps))
+            crop = f["crop"]
+            # videocrop renegotiates on each set; that also re-sends the caps
+            # through capssetter with the new aspect
+            if quiet:
+                for k, v in (("left", l), ("right", r), ("top", t), ("bottom", b)):
+                    if crop.get_property(k) != v:
+                        crop.set_property(k, v)
+            else:
+                for k, v in (("left", l), ("right", r), ("top", t), ("bottom", b)):
+                    crop.set_property(k, v)
+            GstVideo.VideoOverlay.set_render_rectangle(f["sink"], *vis)
+            if not quiet:
+                GstVideo.VideoOverlay.expose(f["sink"])
         except Exception as e:  # noqa
             self.log("geometry: %s" % e)
 

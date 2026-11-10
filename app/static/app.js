@@ -605,42 +605,47 @@ setInterval(pollState, 2000);
 setInterval(snapshotTick, 4000);
 snapshotTick();
 
-/* ---------- picture position (16:9 content on odd-shaped screens) ---------- */
-let geom = { scale: 100, x: 0, y: 0 };
+/* ---------- picture position & shape (odd-shaped screens, wrong-shaped logos) ---------- */
+const GEOM_DEFAULT = { w: 100, h: 100, cx: 50, cy: 50 };
+let geom = { ...GEOM_DEFAULT };
 function renderGeom() {
-  $("#geom-scale").value = geom.scale;
-  $("#geom-x").value = geom.x;
-  $("#geom-y").value = geom.y;
+  $("#geom-w").value = geom.w;
+  $("#geom-h").value = geom.h;
+  $("#geom-cx").value = geom.cx;
+  $("#geom-cy").value = geom.cy;
   const d = $("#geom-preview div");
-  d.style.left = geom.x + "%";
-  d.style.top = geom.y + "%";
-  d.style.width = geom.scale + "%";
-  d.style.height = geom.scale + "%";
+  d.style.width = geom.w + "%";
+  d.style.height = geom.h + "%";
+  d.style.left = (geom.cx - geom.w / 2) + "%";
+  d.style.top = (geom.cy - geom.h / 2) + "%";
 }
-let geomBusy = Promise.resolve();
+let geomQueue = Promise.resolve();
 function sendGeom(next) {
   geom = next;
   renderGeom();
   // one request at a time, so quick taps arrive in order
-  geomBusy = geomBusy.then(async () => {
+  geomQueue = geomQueue.then(async () => {
     const r = await api("PUT", "/api/geometry", geom);
-    if (r && "scale" in r) { geom = r; renderGeom(); }
+    if (r && "w" in r) { geom = r; renderGeom(); }
   }).catch(() => {});
 }
 const geomStep = () => Number($("#geom-step").value) || 1;
+const r2 = v => Math.round(v * 100) / 100;
 $$("[data-move]").forEach(b => b.onclick = () => {
   const [dx, dy] = b.dataset.move.split(",").map(Number);
   const st = geomStep();
-  sendGeom({ ...geom, x: +(geom.x + dx * st).toFixed(2), y: +(geom.y + dy * st).toFixed(2) });
+  sendGeom({ ...geom, cx: r2(geom.cx + dx * st), cy: r2(geom.cy + dy * st) });
 });
-$$("[data-zoom]").forEach(b => b.onclick = () => {
-  const st = geomStep() * Number(b.dataset.zoom);
-  // grow/shrink around the centre of the picture
-  const scale = Math.max(10, Math.min(100, geom.scale + st));
-  const d = (scale - geom.scale) / 2;
-  sendGeom({ scale, x: +(geom.x - d).toFixed(2), y: +(geom.y - d).toFixed(2) });
+$$("[data-size]").forEach(b => b.onclick = () => {
+  // grows/shrinks around the centre; zoom changes both by the same factor
+  const [dw, dh] = b.dataset.size.split(",").map(Number);
+  const f = 1 + geomStep() / 100;
+  const w = dw ? (dw > 0 ? geom.w * f : geom.w / f) : geom.w;
+  const h = dh ? (dh > 0 ? geom.h * f : geom.h / f) : geom.h;
+  sendGeom({ ...geom, w: r2(w), h: r2(h) });
 });
-$("#geom-reset").onclick = () => sendGeom({ scale: 100, x: 0, y: 0 });
-["#geom-scale", "#geom-x", "#geom-y"].forEach(id => $(id).onchange = () =>
-  sendGeom({ scale: Number($("#geom-scale").value), x: Number($("#geom-x").value), y: Number($("#geom-y").value) }));
-api("GET", "/api/geometry").then(r => { if (r && "scale" in r) { geom = r; renderGeom(); } });
+$("#geom-reset").onclick = () => sendGeom({ ...GEOM_DEFAULT });
+["#geom-w", "#geom-h", "#geom-cx", "#geom-cy"].forEach(id => $(id).onchange = () =>
+  sendGeom({ w: Number($("#geom-w").value), h: Number($("#geom-h").value),
+             cx: Number($("#geom-cx").value), cy: Number($("#geom-cy").value) }));
+api("GET", "/api/geometry").then(r => { if (r && "w" in r) { geom = r; renderGeom(); } });
