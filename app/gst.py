@@ -372,6 +372,8 @@ class GstPlayer:
             return False
         pb.set_property("volume", self._volume / 100.0)
         pb.set_state(Gst.State.PLAYING)          # in case it was paused
+        if self._vfilter is not None:            # next item may differ in shape
+            self._apply_geom(self._vfilter, only_if_changed=True)
         return True
 
     def _arm_sync_flip(self):
@@ -396,6 +398,8 @@ class GstPlayer:
         # fds/memory to an eventual OOM) and can wedge HDMI. Just re-arm the
         # advance timer so multi-item playlists still rotate.
         if self.imgpipe is not None and self._img_shown_path == path:
+            if self._ifilter is not None:
+                self._apply_geom(self._ifilter, only_if_changed=True)
             self._arm_image_timer(dur)
             return
         self._stop_image()   # switching images: fully tear the previous one down
@@ -471,6 +475,12 @@ class GstPlayer:
     def get_geometry(self):
         return dict(self._geom)
 
+    def use_geometry(self, g):
+        """Geometry for the next load() (a playlist item's own, or the
+        screen's). Nothing on screen changes until that load."""
+        with self._lock:
+            self._geom = clean_geometry(g)
+
     def set_geometry(self, g):
         """Apply a new geometry to what is on screen now. Returns (geometry,
         needs_reload): a playing video without the filter yet must be reloaded
@@ -542,11 +552,15 @@ class GstPlayer:
             self._disp = (W, H)
         return self._disp
 
-    def _apply_geom(self, f, quiet=False):
+    def _apply_geom(self, f, quiet=False, only_if_changed=False):
         """Set crop, aspect and render rectangle for one filter. quiet = called
         from the caps probe, where the new caps are about to flow anyway."""
         if f["src"] is None:
             return
+        key = (tuple(sorted(self._geom.items())), f["src"])
+        if only_if_changed and f.get("applied") == key:
+            return
+        f["applied"] = key
         W, H = self._display_size(f["sink"])
         sw, sh, spar = f["src"]
         (l, r, t, b), par, vis = geometry_layout(self._geom, sw, sh, W, H, spar)
@@ -813,6 +827,7 @@ class PlayerEngine:
         self.loop_playlist = False
         self.loops_left = 0       # remaining loops for current item
         self.current = None       # the item dict now playing
+        self.playlist_id = None   # id of the playlist being played, if any
         self.playlist_name = None
         self.playing_default = False
         self.blanked = False      # screen forced black; any new play clears it
@@ -832,6 +847,7 @@ class PlayerEngine:
             self.index = 0
             self.loop_playlist = bool(playlist.get("loop_playlist", True))
             self.playlist_name = playlist.get("name")
+            self.playlist_id = playlist.get("id")
             self.playing_default = False
             self._load_current()
 
@@ -849,6 +865,7 @@ class PlayerEngine:
             item = cfg["settings"].get("default_item")
             self.items = []
             self.playlist_name = None
+            self.playlist_id = None
             self.current = None
             self.blanked = False
             if not item:
@@ -890,6 +907,7 @@ class PlayerEngine:
             "playing": cur is not None,
             "playing_default": self.playing_default,
             "blanked": self.blanked,
+            "geometry_own": bool(cur and cur.get("geometry")),
             "playlist_name": self.playlist_name,
             "index": self.index,
             "count": len(self.items),
@@ -965,9 +983,14 @@ class PlayerEngine:
             self.loops_left = max(1, int(loop))
         self._play_item(item)
 
+    def screen_geometry(self):
+        return clean_geometry(config.load()["settings"].get("geometry"))
+
     def _play_item(self, item):
         self.current = item
         self.blanked = False
+        # a playlist item may carry its own picture geometry; else the screen's
+        self.player.use_geometry(item.get("geometry") or self.screen_geometry())
         gen = self._bump_gen()
         t = item["_type"]
         eff_len = None

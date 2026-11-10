@@ -115,3 +115,5 @@ table.items input.vol{width:56px}
 .geom-nums input{width:5.5rem}
 .geom-preview{position:relative;width:12rem;aspect-ratio:16/9;margin:1.5rem;background:#000;outline:2px solid var(--line)}
 .geom-preview div{position:absolute;background:var(--accent);opacity:.55;outline:1px dashed var(--accent)}
+.geom-target{display:flex;flex-wrap:wrap;gap:.4rem 1rem;align-items:center;margin:.2rem 0 .5rem;font-size:.9rem}
+.geom-target b{font-weight:600}

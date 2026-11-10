@@ -20,3 +20,4 @@ previews/
 # Editor / OS cruft
 *.swp
 .DS_Store
+data/geometry.log*

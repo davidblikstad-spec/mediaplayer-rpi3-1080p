@@ -38,6 +38,12 @@
             <button id="btn-blank">■ Blank screen</button>
           </div>
           <h3>Picture position &amp; shape</h3>
+          <div class="geom-target">
+            <label class="inline"><input type="radio" name="geom-target" value="item" checked> This item only: <b id="geom-item">–</b></label>
+            <label class="inline"><input type="radio" name="geom-target" value="screen"> Whole screen (items without their own)</label>
+            <button id="geom-clear" class="small" title="Remove this item's own setting">✕ Remove item's own</button>
+            <span id="geom-own" class="muted"></span>
+          </div>
           <div class="geom">
             <div class="geom-pad">
               <span></span><button data-move="0,-1" title="Up">▲</button><span></span>

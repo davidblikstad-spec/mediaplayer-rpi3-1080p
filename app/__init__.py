@@ -453,19 +453,69 @@ def create_app():
             gstmod.engine.unblank()
         return jsonify({"ok": True, "blanked": gstmod.engine.blanked})
 
+    # Picture geometry. target "item" = the playlist item now playing (or the
+    # default item) keeps its own; target "screen" = everything without one.
+    def _geometry_view():
+        eng = gstmod.engine
+        cur = eng.current
+        label = None
+        if cur:
+            label = cur.get("file") or cur.get("name") or cur.get("channel")
+        return {
+            "geometry": gstmod.player.get_geometry(),
+            "screen": eng.screen_geometry(),
+            "own": bool(cur and cur.get("geometry")),
+            "item": label,
+            "playlist": eng.playlist_name if not eng.playing_default else None,
+            "can_item": bool(cur and (eng.playing_default or cur.get("id"))),
+        }
+
     @app.route("/api/geometry", methods=["GET", "PUT"])
     @login_required
     def api_geometry():
+        eng = gstmod.engine
         if request.method == "GET":
-            return jsonify(gstmod.player.get_geometry())
-        g, reload_needed = gstmod.player.set_geometry(request.get_json(force=True) or {})
+            return jsonify(_geometry_view())
+        body = request.get_json(force=True) or {}
+        with eng.lock:
+            cur = eng.current
+            if body.get("target") == "item":
+                if not cur:
+                    return jsonify({"error": "nothing is playing"}), 400
+                g = None if body.get("clear") else gstmod.clean_geometry(body)
+                pid, iid, is_default = eng.playlist_id, cur.get("id"), eng.playing_default
 
-        def m(c):
-            c["settings"]["geometry"] = g
-        config.update(m)
+                def m(c):
+                    if is_default:
+                        it = c["settings"].get("default_item")
+                    else:
+                        pl = config.get_playlist(c, pid) or {"items": []}
+                        it = next((i for i in pl["items"] if i.get("id") == iid), None)
+                    if it is None:
+                        return False
+                    if g:
+                        it["geometry"] = g
+                    else:
+                        it.pop("geometry", None)
+                    return True
+                if not config.update(m):
+                    return jsonify({"error": "item not found (playlist changed?)"}), 404
+                if g:
+                    cur["geometry"] = g
+                else:
+                    cur.pop("geometry", None)
+                eff = g or eng.screen_geometry()
+            else:
+                g = gstmod.clean_geometry(body)
+
+                def m(c):
+                    c["settings"]["geometry"] = g
+                config.update(m)
+                eff = (cur.get("geometry") if cur else None) or g
+            _, reload_needed = gstmod.player.set_geometry(eff)
         if reload_needed:
-            gstmod.engine.reapply()      # first change on a video: add the filter
-        return jsonify(g)
+            eng.reapply()                # first change on a video: add the filter
+        return jsonify(_geometry_view())
 
     @app.route("/api/pause", methods=["POST"])
     @login_required

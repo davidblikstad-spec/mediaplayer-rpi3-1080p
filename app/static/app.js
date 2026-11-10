@@ -52,6 +52,7 @@ async function pollState() {
     <div><b>Volume</b> ${p.volume != null ? Math.round(p.volume) : "–"}</div>
     <div><b>State</b> ${p.blanked ? "screen blanked" : (p.paused ? "paused" : (p.current ? "playing" : "idle"))} · player ${s.player_alive ? "ok" : "down"}</div>`;
   renderBlank(!!p.blanked);
+  if (typeof geomFollow === "function") geomFollow(p);
 }
 function renderQuickplay() {
   $("#quickplay").innerHTML = "";
@@ -132,7 +133,8 @@ function itemRow(it, i) {
   td0.innerHTML = `<button class="small up">↑</button><button class="small down">↓</button>`;
   tr.appendChild(td0);
   const label = isStream ? (it.name || it.channel || "live") : it.file;
-  tr.appendChild(cell(`<span title="${esc(label)}">${esc(label)}</span>`));
+  tr.appendChild(cell(`<span title="${esc(label)}">${esc(label)}</span>` +
+    (it.geometry ? ` <button class="small geomx" title="Has its own picture position/shape (${it.geometry.w}×${it.geometry.h} %). Click to remove; Save to keep.">◱ ✕</button>` : "")));
   tr.appendChild(cell(isStream ? "live" : it.type));
   // in
   tr.appendChild(cell((isImg || isStream) ? "–" : `<input class="in" type="number" min="0" step="0.1" value="${it.in ?? 0}">`));
@@ -157,6 +159,8 @@ function itemRow(it, i) {
   tda.innerHTML = `<button class="small prev">▶</button><button class="small danger del">✕</button>`;
   tr.appendChild(tda);
 
+  const gx = tr.querySelector(".geomx");
+  if (gx) gx.onclick = () => { delete curPlaylist().items[i].geometry; renderPlaylistItems(); toast("Own position removed — press Save"); };
   td0.querySelector(".up").onclick = () => moveItem(i, -1);
   td0.querySelector(".down").onclick = () => moveItem(i, 1);
   tda.querySelector(".del").onclick = () => { curPlaylist().items.splice(i, 1); renderPlaylistItems(); };
@@ -178,9 +182,10 @@ function collectItems() {
   return rows.map((tr, i) => {
     const src = pl.items[i];
     const g = (c) => tr.querySelector("." + c);
+    const own = src.geometry ? { geometry: src.geometry } : {};
     if (src.type === "stream") {
       const dv = g("dur").value.trim();
-      return {
+      return { ...own,
         id: src.id, type: "stream", provider: src.provider,
         channel: src.channel, name: src.name,
         duration: dv === "" ? null : (parseFloat(dv) || null),
@@ -190,7 +195,7 @@ function collectItems() {
         fade_out: parseFloat(g("fout").value) || 0,
       };
     }
-    const o = { id: src.id, file: src.file, type: src.type };
+    const o = { ...own, id: src.id, file: src.file, type: src.type };
     if (src.type === "image") {
       o.duration = parseFloat(g("dur").value) || 10;
       o.loop = 1;
@@ -620,15 +625,41 @@ function renderGeom() {
   d.style.top = (geom.cy - geom.h / 2) + "%";
 }
 let geomQueue = Promise.resolve();
-function sendGeom(next) {
+let geomPending = 0;
+let geomView = {};
+function geomTarget() { return $("input[name=geom-target]:checked").value; }
+function showGeomView(v) {
+  if (!v || !v.geometry) return;
+  geomView = v;
+  geom = v.geometry;
+  renderGeom();
+  $("#geom-item").textContent = v.item ? (v.playlist ? `${v.item} (${v.playlist})` : `${v.item} (default)`) : "nothing playing";
+  const itemRadio = $("input[name=geom-target][value=item]");
+  itemRadio.disabled = !v.can_item;
+  if (!v.can_item && itemRadio.checked) $("input[name=geom-target][value=screen]").checked = true;
+  $("#geom-clear").style.display = v.own ? "" : "none";
+  $("#geom-own").textContent = v.own ? "this item has its own position" : "using the whole-screen position";
+}
+function sendGeom(next, extra) {
   geom = next;
   renderGeom();
+  geomPending++;
   // one request at a time, so quick taps arrive in order
   geomQueue = geomQueue.then(async () => {
-    const r = await api("PUT", "/api/geometry", geom);
-    if (r && "w" in r) { geom = r; renderGeom(); }
-  }).catch(() => {});
+    const r = await api("PUT", "/api/geometry", { ...geom, target: geomTarget(), ...(extra || {}) });
+    if (r && r.error) toast(r.error);
+    else showGeomView(r);
+  }).catch(() => {}).finally(() => { geomPending--; });
 }
+// what is playing changes (next item, other playlist): show its geometry
+let geomSeen = null;
+function geomFollow(p) {
+  const key = JSON.stringify([p.playlist_name, p.index, p.current && p.current.file, p.geometry_own]);
+  if (key === geomSeen || geomPending) return;
+  geomSeen = key;
+  api("GET", "/api/geometry").then(showGeomView);
+}
+$("#geom-clear").onclick = () => sendGeom(geom, { target: "item", clear: true });
 const geomStep = () => Number($("#geom-step").value) || 1;
 const r2 = v => Math.round(v * 100) / 100;
 $$("[data-move]").forEach(b => b.onclick = () => {
@@ -645,7 +676,14 @@ $$("[data-size]").forEach(b => b.onclick = () => {
   sendGeom({ ...geom, w: r2(w), h: r2(h) });
 });
 $("#geom-reset").onclick = () => sendGeom({ ...GEOM_DEFAULT });
+$$("input[name=geom-target]").forEach(r => r.onchange = () => {
+  try { localStorage.setItem("geomTarget", geomTarget()); } catch (e) {}
+});
+try {
+  const t = localStorage.getItem("geomTarget");
+  if (t) $(`input[name=geom-target][value=${t}]`).checked = true;
+} catch (e) {}
 ["#geom-w", "#geom-h", "#geom-cx", "#geom-cy"].forEach(id => $(id).onchange = () =>
   sendGeom({ w: Number($("#geom-w").value), h: Number($("#geom-h").value),
              cx: Number($("#geom-cx").value), cy: Number($("#geom-cy").value) }));
-api("GET", "/api/geometry").then(r => { if (r && "w" in r) { geom = r; renderGeom(); } });
+api("GET", "/api/geometry").then(showGeomView);
