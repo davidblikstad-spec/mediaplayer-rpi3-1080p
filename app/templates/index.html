@@ -37,6 +37,31 @@
             <button id="btn-stop">Stop → default</button>
             <button id="btn-blank">■ Blank screen</button>
           </div>
+          <h3>Picture position (16:9)</h3>
+          <div class="geom">
+            <div class="geom-pad">
+              <span></span><button data-move="0,-1" title="Up">▲</button><span></span>
+              <button data-move="-1,0" title="Left">◀</button>
+              <button id="geom-reset" title="Full screen">⟲</button>
+              <button data-move="1,0" title="Right">▶</button>
+              <span></span><button data-move="0,1" title="Down">▼</button><span></span>
+            </div>
+            <div class="geom-side">
+              <div class="controls">
+                <button data-zoom="-1" title="Smaller">− Smaller</button>
+                <button data-zoom="1" title="Larger">+ Larger</button>
+              </div>
+              <label class="inline">Step
+                <select id="geom-step"><option value="0.5">0.5 %</option><option value="1" selected>1 %</option><option value="5">5 %</option></select>
+              </label>
+              <div class="geom-nums">
+                <label>Size % <input id="geom-scale" type="number" min="10" max="100" step="0.5"></label>
+                <label>Left % <input id="geom-x" type="number" min="0" max="90" step="0.5"></label>
+                <label>Top % <input id="geom-y" type="number" min="0" max="90" step="0.5"></label>
+              </div>
+              <div id="geom-preview" class="geom-preview"><div></div></div>
+            </div>
+          </div>
           <h3>Quick play</h3>
           <div id="quickplay" class="chips"></div>
           <h3>Display (HDMI-CEC)</h3>

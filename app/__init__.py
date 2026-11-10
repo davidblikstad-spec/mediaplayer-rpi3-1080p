@@ -420,6 +420,18 @@ def create_app():
             gstmod.engine.unblank()
         return jsonify({"ok": True, "blanked": gstmod.engine.blanked})
 
+    @app.route("/api/geometry", methods=["GET", "PUT"])
+    @login_required
+    def api_geometry():
+        if request.method == "GET":
+            return jsonify(gstmod.player.get_geometry())
+        g = gstmod.player.set_geometry(request.get_json(force=True) or {})
+
+        def m(c):
+            c["settings"]["geometry"] = g
+        config.update(m)
+        return jsonify(g)
+
     @app.route("/api/pause", methods=["POST"])
     @login_required
     def api_pause():

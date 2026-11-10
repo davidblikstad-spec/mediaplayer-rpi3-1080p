@@ -604,3 +604,43 @@ pollState();
 setInterval(pollState, 2000);
 setInterval(snapshotTick, 4000);
 snapshotTick();
+
+/* ---------- picture position (16:9 content on odd-shaped screens) ---------- */
+let geom = { scale: 100, x: 0, y: 0 };
+function renderGeom() {
+  $("#geom-scale").value = geom.scale;
+  $("#geom-x").value = geom.x;
+  $("#geom-y").value = geom.y;
+  const d = $("#geom-preview div");
+  d.style.left = geom.x + "%";
+  d.style.top = geom.y + "%";
+  d.style.width = geom.scale + "%";
+  d.style.height = geom.scale + "%";
+}
+let geomBusy = Promise.resolve();
+function sendGeom(next) {
+  geom = next;
+  renderGeom();
+  // one request at a time, so quick taps arrive in order
+  geomBusy = geomBusy.then(async () => {
+    const r = await api("PUT", "/api/geometry", geom);
+    if (r && "scale" in r) { geom = r; renderGeom(); }
+  }).catch(() => {});
+}
+const geomStep = () => Number($("#geom-step").value) || 1;
+$$("[data-move]").forEach(b => b.onclick = () => {
+  const [dx, dy] = b.dataset.move.split(",").map(Number);
+  const st = geomStep();
+  sendGeom({ ...geom, x: +(geom.x + dx * st).toFixed(2), y: +(geom.y + dy * st).toFixed(2) });
+});
+$$("[data-zoom]").forEach(b => b.onclick = () => {
+  const st = geomStep() * Number(b.dataset.zoom);
+  // grow/shrink around the centre of the picture
+  const scale = Math.max(10, Math.min(100, geom.scale + st));
+  const d = (scale - geom.scale) / 2;
+  sendGeom({ scale, x: +(geom.x - d).toFixed(2), y: +(geom.y - d).toFixed(2) });
+});
+$("#geom-reset").onclick = () => sendGeom({ scale: 100, x: 0, y: 0 });
+["#geom-scale", "#geom-x", "#geom-y"].forEach(id => $(id).onchange = () =>
+  sendGeom({ scale: Number($("#geom-scale").value), x: Number($("#geom-x").value), y: Number($("#geom-y").value) }));
+api("GET", "/api/geometry").then(r => { if (r && "scale" in r) { geom = r; renderGeom(); } });

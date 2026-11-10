@@ -25,7 +25,8 @@ import time
 
 import gi
 gi.require_version("Gst", "1.0")
-from gi.repository import Gst, GLib  # noqa: E402
+gi.require_version("GstVideo", "1.0")
+from gi.repository import Gst, GLib, GstVideo  # noqa: E402
 
 from . import config, media, nrk  # noqa: E402
 
@@ -40,6 +41,30 @@ STREAM_SYNC_HOLD_S = 3.0
 # Optional extra audio delay (ms) applied after the flip, as a manual nudge if
 # the auto-alignment leaves a residual offset. Overridden by stream_av_delay_ms.
 STREAM_AV_DELAY_MS = 0
+
+# Output geometry. Some screens (LED walls, odd panels) only show part of the
+# HDMI picture, but the content is always 16:9. The geometry setting shrinks
+# the picture and moves it, done by the DRM plane itself (kmssink's render
+# rectangle), so it costs nothing per frame. scale = picture width in % of the
+# output width; x / y = its left / top edge in % of the output width / height.
+DEFAULT_GEOMETRY = {"scale": 100.0, "x": 0.0, "y": 0.0}
+MIN_SCALE = 10.0
+
+
+def clean_geometry(g):
+    """Clamp a geometry dict to something that stays on screen."""
+    g = g or {}
+    def num(k, d):
+        try:
+            v = float(g.get(k, d))
+        except (TypeError, ValueError):
+            v = d
+        return v if v == v else d     # NaN -> default
+    scale = max(MIN_SCALE, min(100.0, num("scale", 100.0)))
+    x = max(0.0, min(100.0 - scale, num("x", 0.0)))
+    # height in % of the output height, for a 16:9 picture on a 16:9 output
+    y = max(0.0, min(100.0 - scale, num("y", 0.0)))
+    return {"scale": round(scale, 2), "x": round(x, 2), "y": round(y, 2)}
 
 
 class GstPlayer:
@@ -69,6 +94,9 @@ class GstPlayer:
         self._shot_lock = threading.Lock()   # single-flight HDMI snapshots
         self._img_shown_path = None          # file on the live image pipeline
         self._vid_loaded = None              # (path, start, end) on the live playbin
+        self._geom = dict(DEFAULT_GEOMETRY)  # see DEFAULT_GEOMETRY
+        self._geom_set = False               # a rectangle was ever applied
+        self._img_sink = None                # kmssink of the live image pipeline
 
     # ---- lifecycle --------------------------------------------------------
     def start(self):
@@ -78,6 +106,7 @@ class GstPlayer:
             cfg = config.load()["settings"]
             self.set_audio_device(cfg.get("audio_out"))
             self.set_av_delay(cfg.get("stream_av_delay_ms"))
+            self._geom = clean_geometry(cfg.get("geometry"))
         except Exception:
             pass
         self._build_playbin()
@@ -108,6 +137,7 @@ class GstPlayer:
         if vsink is not None:
             vsink.set_property("enable-last-sample", True)  # for cheap snapshots
             pb.set_property("video-sink", vsink)
+            self._apply_geometry(vsink)
         asink = self._make_audio_sink()
         if asink is not None:
             pb.set_property("audio-sink", asink)
@@ -319,6 +349,8 @@ class GstPlayer:
             self.log("image pipeline: missing element")
             return
         src.set_property("location", path)
+        self._apply_geometry(sink)
+        self._img_sink = sink
         for e in (src, dec, freeze, conv, sink):
             pipe.add(e)
         src.link(dec)
@@ -371,6 +403,49 @@ class GstPlayer:
             self.imgpipe.set_state(Gst.State.NULL)
             self.imgpipe = None
         self._img_shown_path = None
+        self._img_sink = None
+
+    # ---- output geometry ---------------------------------------------------
+    def get_geometry(self):
+        return dict(self._geom)
+
+    def set_geometry(self, g):
+        """Move/scale the picture on the live sinks right away (no reload)."""
+        with self._lock:
+            self._geom = clean_geometry(g)
+            sinks = [self._img_sink]
+            if self.playbin is not None:
+                sinks.append(self.playbin.get_property("video-sink"))
+            for s in sinks:
+                if s is not None:
+                    self._apply_geometry(s, redraw=True)
+            return dict(self._geom)
+
+    def _apply_geometry(self, sink, redraw=False):
+        g = self._geom
+        if g == DEFAULT_GEOMETRY and not self._geom_set:
+            return            # untouched: leave kmssink on its own full-screen path
+        # A sink that is not yet open reports 0; use the last real size seen.
+        try:
+            W = int(sink.get_property("display-width") or 0)
+            H = int(sink.get_property("display-height") or 0)
+        except Exception:
+            W = H = 0
+        if W and H:
+            self._disp = (W, H)
+        else:
+            W, H = getattr(self, "_disp", (1920, 1080))
+        w = int(round(W * g["scale"] / 100.0))
+        h = min(H, int(round(w * 9 / 16.0)))
+        x = min(int(round(W * g["x"] / 100.0)), W - w)
+        y = min(int(round(H * g["y"] / 100.0)), H - h)
+        try:
+            GstVideo.VideoOverlay.set_render_rectangle(sink, x, y, w, h)
+            self._geom_set = True
+            if redraw:
+                GstVideo.VideoOverlay.expose(sink)
+        except Exception as e:  # noqa
+            self.log("geometry: %s" % e)
 
     def stop(self):
         """Blank the screen and play nothing (releases the DRM plane)."""

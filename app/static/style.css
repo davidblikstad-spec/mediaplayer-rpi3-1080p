@@ -103,3 +103,13 @@ table.items input.vol{width:56px}
 .modal video,.modal img{max-width:80vw;max-height:70vh;display:block}
 .picker-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:.6rem;margin-top:.6rem}
 .picker-list .media-card{cursor:pointer}
+
+.geom{display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start;margin:.3rem 0 .8rem}
+.geom-pad{display:grid;grid-template-columns:repeat(3,2.8rem);grid-auto-rows:2.8rem;gap:.3rem}
+.geom-pad button{padding:0;font-size:1.1rem}
+.geom-side{display:flex;flex-direction:column;gap:.5rem;flex:1;min-width:12rem}
+.geom-nums{display:flex;gap:.5rem;flex-wrap:wrap}
+.geom-nums label{display:flex;flex-direction:column;font-size:.8rem;gap:.15rem}
+.geom-nums input{width:5rem}
+.geom-preview{position:relative;width:12rem;aspect-ratio:16/9;border:1px solid var(--line);background:#000}
+.geom-preview div{position:absolute;background:var(--accent);opacity:.7}
