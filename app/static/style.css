@@ -105,10 +105,16 @@ table.items input.vol{width:56px}
 .picker-list .media-card{cursor:pointer}
 
 .geom{display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start;margin:.3rem 0 .8rem}
-.geom-pad{display:grid;grid-template-columns:repeat(3,2.8rem);grid-auto-rows:2.8rem;gap:.3rem}
-.geom-pad button{padding:0;font-size:1.1rem}
+.geom-pad{display:grid;grid-template-columns:repeat(3,4.2rem);grid-auto-rows:4.2rem;gap:.4rem}
+.geom-pad button{padding:0;font-size:1.6rem}
+.geom-hub{border-radius:50%;background:var(--line);opacity:.35;margin:1.1rem}
+.geom-reset{align-self:center;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.1rem;width:4.6rem;height:4.6rem;padding:0;font-size:1.7rem;line-height:1}
+.geom-reset small{font-size:.75rem}
+.geom-side button{min-height:3.2rem;min-width:3.6rem;padding:0 .9rem;font-size:1.05rem}
+.geom-row button[data-size="-1,-1"],.geom-row button[data-size="1,1"]{min-width:4.4rem;font-size:1.5rem}
+.geom-side select{min-height:2.6rem;font-size:1rem}
 .geom-side{display:flex;flex-direction:column;gap:.45rem}
-.geom-row{display:flex;gap:.35rem;align-items:center}
+.geom-row{display:flex;gap:.5rem;align-items:center}
 .geom-row span{width:3.6rem;font-size:.85rem;color:var(--muted)}
 .geom-nums{display:grid;grid-template-columns:1fr 1fr;gap:.4rem}
 .geom-nums label{display:flex;flex-direction:column;font-size:.8rem;gap:.15rem}
