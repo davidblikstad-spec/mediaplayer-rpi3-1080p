@@ -1,6 +1,7 @@
 """Flask application: auth, web UI, REST API, and wiring of player/scheduler."""
 import functools
 import os
+import secrets
 import socket
 import threading
 import time
@@ -40,6 +41,11 @@ def _public_config(cfg):
     c.get("auth", {}).pop("password_hash", None)
     c.get("settings", {}).pop("secret_key", None)
     return c
+
+
+TOKEN_TTL_S = 60
+_tokens = {}                       # one-time login token -> expiry (epoch s)
+_tokens_lock = threading.Lock()
 
 
 def login_required(fn):
@@ -133,6 +139,33 @@ def create_app():
                 return redirect(url_for("index"))
             return render_template("login.html", error="Invalid credentials")
         return render_template("login.html", error=None)
+
+    # One-time login links. A logged-in client (the door panel's server, which
+    # holds the admin login) asks for a token; whoever opens /login/token/<t>
+    # within TOKEN_TTL_S gets a session, once. So a panel can send someone
+    # straight into the editor after its own PIN, without ever giving the
+    # tablet this player's password.
+    @app.route("/api/login-token", methods=["POST"])
+    @login_required
+    def api_login_token():
+        now = time.time()
+        with _tokens_lock:
+            for t in [t for t, exp in _tokens.items() if exp < now]:
+                del _tokens[t]
+            tok = secrets.token_urlsafe(24)
+            _tokens[tok] = now + TOKEN_TTL_S
+        return jsonify({"token": tok, "path": "/login/token/" + tok,
+                        "expires_in": TOKEN_TTL_S})
+
+    @app.route("/login/token/<tok>")
+    def login_token(tok):
+        with _tokens_lock:
+            exp = _tokens.pop(tok, 0)
+        if exp < time.time():
+            return redirect(url_for("login"))
+        session["user"] = config.load()["auth"]["username"]
+        log("login via one-time link from %s" % request.remote_addr)
+        return redirect(url_for("index"))
 
     @app.route("/logout")
     def logout():
